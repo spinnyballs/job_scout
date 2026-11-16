@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Job Scout — SEEK Scanner & Triage</title>
+  <link rel="stylesheet" href="/static/styles.css?v=7" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">JS</div>
+        <div>
+          <h1>Job Scout</h1>
+          <p class="subtitle">Multi-Board Ready · Active: <span id="active-board-label">SEEK New Zealand</span></p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <select id="board-select" class="select-input" title="Select job board"></select>
+        <button id="btn-seek-login" class="btn btn-secondary" title="Open persistent Chrome/Edge window to sign into SEEK once">SEEK Browser Login</button>
+        <button id="btn-seek-logout" class="btn btn-secondary hidden" title="Clear SEEK cookies and log out of copilot browser">Log Out SEEK</button>
+        <button id="btn-phone-sync" class="btn btn-secondary" title="Show Wi-Fi Sync URL for Job Scout Android app">Phone Sync</button>
+        <button id="btn-qa" class="btn btn-secondary">Q&amp;A Memory</button>
+        <button id="btn-profile" class="btn btn-secondary">Master Profile</button>
+        <button id="btn-ai-settings" class="btn btn-secondary">AI Providers</button>
+        <button id="btn-config" class="btn btn-secondary">Queries &amp; Guardrails</button>
+        <button id="btn-add-job" class="btn btn-green" onclick="window.openAddJobModal && window.openAddJobModal()" title="Import a SEEK job by URL or ID">+ Add Job Link</button>
+        <button id="btn-scan" class="btn btn-primary">Run Scan Now</button>
+      </div>
+    </header>
+
+    <div id="scan-banner" class="scan-banner hidden">
+      <div class="spinner"></div>
+      <div class="scan-banner-text">
+        <strong id="scan-stage">Scanning...</strong>
+        <span id="scan-message">Starting...</span>
+      </div>
+      <div id="scan-counters" class="scan-counters"></div>
+    </div>
+
+    <div id="tailor-queue-banner" class="scan-banner hidden">
+      <div id="tq-spinner" class="spinner"></div>
+      <div class="scan-banner-text">
+        <strong id="tq-stage">Tailoring Queue</strong>
+        <span id="tq-message">Queued...</span>
+      </div>
+      <div id="tq-counters" class="scan-counters"></div>
+      <button id="btn-tq-cancel" class="btn btn-small btn-red" type="button">Stop Queue</button>
+      <button id="btn-tq-dismiss" class="btn btn-small btn-secondary hidden" type="button">Dismiss</button>
+    </div>
+
+    <section class="stats-bar">
+      <div class="stat-card">
+        <span class="stat-label">Total Indexed</span>
+        <strong id="stat-total">0</strong>
+      </div>
+      <div class="stat-card accent">
+        <span class="stat-label">Strong Fit (50+)</span>
+        <strong id="stat-high">0</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Shortlisted / Tailored</span>
+        <strong id="stat-shortlisted">0</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Applied / Interview</span>
+        <strong id="stat-applied">0</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">No Reply / Closed</span>
+        <strong id="stat-closed">0</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Blocked (Guard)</span>
+        <strong id="stat-blocked">0</strong>
+      </div>
+      <div class="stat-card wide">
+        <span class="stat-label">Last Scan</span>
+        <strong id="stat-lastrun">Never</strong>
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <div class="tabs" id="status-tabs">
+        <button class="tab active" data-status="all">All Active</button>
+        <button class="tab" data-status="phone_synced">From Phone (<span id="tab-phone-count">0</span>)</button>
+        <button class="tab" data-status="discovered">Discovered</button>
+        <button class="tab" data-status="shortlisted">Shortlisted</button>
+        <button class="tab" data-status="tailored">Tailored</button>
+        <button class="tab" data-status="applied">Applied</button>
+        <button class="tab" data-status="interview">Interview</button>
+        <button class="tab" data-status="no_reply,rejected">No Reply / Closed (<span id="tab-closed-count">0</span>)</button>
+        <button class="tab" data-status="skipped">Skipped</button>
+        <button class="tab" data-status="blocked">Blocked</button>
+      </div>
+
+      <div class="filters">
+        <input id="search-input" type="search" placeholder="Filter title, company, skills..." />
+        <select id="query-filter" class="select-input">
+          <option value="">All search profiles</option>
+        </select>
+        <select id="minscore-filter" class="select-input">
+          <option value="0">Any score</option>
+          <option value="25">Score 25+</option>
+          <option value="45" selected>Score 45+</option>
+          <option value="65">Score 65+</option>
+        </select>
+        <select id="sort-select" class="select-input">
+          <option value="score">Sort: Best Fit</option>
+          <option value="newest">Sort: Newest</option>
+          <option value="salary">Sort: Highest Salary</option>
+        </select>
+      </div>
+    </section>
+
+    <main class="workspace">
+      <div class="job-list-col">
+        <div id="batch-bar" class="batch-bar">
+          <div class="batch-bar-left">
+            <label class="batch-select-all" title="Select or deselect all visible jobs">
+              <input type="checkbox" id="batch-select-visible" />
+              <span>All</span>
+            </label>
+            <button id="btn-select-untailored" class="btn btn-small btn-secondary" type="button" title="Select visible jobs that do not have a tailored CV yet">Untailored</button>
+            <button id="btn-clear-selection" class="btn btn-small btn-secondary hidden" type="button">Clear</button>
+          </div>
+          <div class="batch-bar-right">
+            <span id="batch-count" class="batch-count">0 selected</span>
+            <button id="btn-queue-selected" class="btn btn-small btn-primary" type="button" disabled>Queue Tailor (0)</button>
+          </div>
+        </div>
+        <div class="job-list-pane" id="job-list">
+          <div class="empty-state">Click <strong>Run Scan Now</strong> to fetch fresh roles from SEEK NZ.</div>
+        </div>
+      </div>
+
+      <aside class="detail-pane" id="detail-pane">
+        <div class="empty-state">Select a job on the left to inspect its full description, fit breakdown, screening questions, and estimated salary.</div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Config Modal -->
+  <div id="config-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Scanner Configuration & Guardrails</h2>
+        <button id="btn-close-config" class="btn-icon">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-text">
+          Edit search profiles, employer blocklist (add your current or past employers to block them automatically), and scoring weights. Saving automatically re-scores existing jobs.
+        </p>
+
+        <div class="config-section">
+          <label class="field-label">Blocked Companies (one per line — hard-blocks company &amp; description mentions)</label>
+          <textarea id="cfg-blocked-companies" rows="4"></textarea>
+        </div>
+
+        <div class="config-grid">
+          <div class="config-section">
+            <label class="field-label">Default Board</label>
+            <select id="cfg-default-board" class="select-input"></select>
+          </div>
+          <div class="config-section">
+            <label class="field-label">Auto-Probe Hidden Salary Above Score</label>
+            <input id="cfg-probe-threshold" type="number" min="0" max="100" />
+          </div>
+        </div>
+
+        <div class="config-section">
+          <div class="section-row">
+            <label class="field-label">Search Queries</label>
+            <button id="btn-add-query" class="btn btn-small btn-secondary">+ Add Query</button>
+          </div>
+          <div id="cfg-queries-list" class="queries-editor"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-config" class="btn btn-secondary">Cancel</button>
+        <button id="btn-save-config" class="btn btn-primary">Save &amp; Re-score Jobs</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Provider Settings Modal -->
+  <div id="ai-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>AI Providers &amp; API Keys</h2>
+        <button class="btn-icon" onclick="closeModal('ai-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-text">
+          Gemini API is active by default. OpenAI-compatible (Ollama, OpenRouter, Groq, OpenAI) and Anthropic Claude slots are ready to switch anytime. Keys are stored locally in <code>config/secrets.json</code>.
+        </p>
+
+        <div class="config-grid">
+          <div class="config-section">
+            <label class="field-label">Active AI Provider</label>
+            <select id="ai-provider-select" class="select-input"></select>
+          </div>
+          <div class="config-section">
+            <label class="field-label">Temperature (lower = stricter facts)</label>
+            <input id="ai-temperature" type="number" step="0.05" min="0" max="1" />
+          </div>
+        </div>
+
+        <div class="ai-provider-card">
+          <div class="section-row">
+            <strong>1. Google Gemini API (Default)</strong>
+            <span id="badge-gemini-key" class="tag">Checking...</span>
+          </div>
+          <div class="config-grid">
+            <div>
+              <label class="field-label">Gemini Model</label>
+              <input id="ai-gemini-model" type="text" placeholder="gemini-2.5-flash" />
+            </div>
+            <div>
+              <label class="field-label">Gemini API Key (leave blank to keep saved)</label>
+              <input id="ai-gemini-key" type="password" placeholder="AIza..." autocomplete="off" />
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label class="field-label">Thinking Level (for Gemini 2.5+ / 3+ / 4+)</label>
+            <select id="ai-gemini-thinking" class="select-input" style="width:100%">
+              <option value="default">Default (Model auto)</option>
+              <option value="minimal">Minimal (Fastest)</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High (Deepest reasoning)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="ai-provider-card">
+          <div class="section-row">
+            <strong>2. DeepSeek API (deepseek-chat)</strong>
+            <span id="badge-deepseek-key" class="tag">Optional</span>
+          </div>
+          <div class="config-grid">
+            <div>
+              <label class="field-label">DeepSeek Model</label>
+              <input id="ai-deepseek-model" type="text" placeholder="deepseek-chat" />
+            </div>
+            <div>
+              <label class="field-label">DeepSeek API Key (leave blank to keep saved)</label>
+              <input id="ai-deepseek-key" type="password" placeholder="sk-..." autocomplete="off" />
+            </div>
+          </div>
+        </div>
+
+        <div class="ai-provider-card">
+          <div class="section-row">
+            <strong>3. OpenAI-Compatible / Local Ollama / OpenRouter</strong>
+            <span id="badge-openai-key" class="tag">Optional</span>
+          </div>
+          <div class="config-grid">
+            <div>
+              <label class="field-label">Base URL</label>
+              <input id="ai-openai-url" type="text" placeholder="http://127.0.0.1:11434/v1" />
+            </div>
+            <div>
+              <label class="field-label">Model Name</label>
+              <input id="ai-openai-model" type="text" placeholder="qwen2.5:14b or gpt-4o" />
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label class="field-label">API Key (not needed for local Ollama)</label>
+            <input id="ai-openai-key" type="password" placeholder="sk-..." autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="ai-provider-card">
+          <div class="section-row">
+            <strong>4. Anthropic Claude API</strong>
+            <span id="badge-anthropic-key" class="tag">Optional</span>
+          </div>
+          <div class="config-grid">
+            <div>
+              <label class="field-label">Claude Model</label>
+              <input id="ai-anthropic-model" type="text" placeholder="claude-sonnet-4-5" />
+            </div>
+            <div>
+              <label class="field-label">Anthropic API Key</label>
+              <input id="ai-anthropic-key" type="password" placeholder="sk-ant-..." autocomplete="off" />
+            </div>
+          </div>
+        </div>
+
+        <div class="ai-provider-card">
+          <div class="section-row">
+            <strong>5. Custom Provider Presets (OpenAI-Compatible)</strong>
+          </div>
+          <div id="ai-custom-presets-list" style="margin-top:6px;"></div>
+          <div class="config-grid" style="margin-top:8px;">
+            <input id="ai-new-preset-label" type="text" placeholder="Preset Label (e.g. Groq / OpenRouter)" />
+            <input id="ai-new-preset-url" type="text" placeholder="Base URL (https://.../v1)" />
+            <input id="ai-new-preset-model" type="text" placeholder="Model ID" />
+            <input id="ai-new-preset-key" type="password" placeholder="API Key (optional)" autocomplete="off" />
+          </div>
+          <div style="margin-top:8px;text-align:right;">
+            <button id="btn-add-custom-preset" class="btn btn-small btn-secondary" type="button">+ Add Custom Preset</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('ai-modal')">Cancel</button>
+        <button id="btn-save-ai" class="btn btn-primary">Save AI Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Q&A Memory Bank Modal -->
+  <div id="qa-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Screening Q&amp;A Memory Bank</h2>
+        <button class="btn-icon" onclick="closeModal('qa-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-text">
+          Canonical answers reused when drafting screening question responses (and later for browser autofill).
+        </p>
+        <div id="qa-list" class="qa-list"></div>
+        <div class="ai-provider-card">
+          <strong>Add / Update Answer</strong>
+          <div class="config-grid" style="margin-top:8px">
+            <input id="qa-new-key" type="text" placeholder="Canonical key (e.g. relocation_au)" />
+            <select id="qa-new-cat" class="select-input">
+              <option value="work_rights">Work Rights</option>
+              <option value="logistics">Logistics / Notice / Licence</option>
+              <option value="salary">Salary</option>
+              <option value="technical">Technical / Licences</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+          <input id="qa-new-pattern" type="text" style="width:100%;margin-top:8px" placeholder="Question pattern (e.g. Willing to relocate or travel?)" />
+          <textarea id="qa-new-answer" rows="2" style="width:100%;margin-top:8px" placeholder="Your canonical verified answer..."></textarea>
+          <div style="margin-top:8px;text-align:right">
+            <button id="btn-add-qa" class="btn btn-small btn-primary">Save Q&amp;A Entry</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('qa-modal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Master Profile Modal -->
+  <div id="profile-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:860px;">
+      <div class="modal-header">
+        <h2>Verified Master Candidate Profile &amp; AI Check</h2>
+        <button class="btn-icon" onclick="closeModal('profile-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="tabs" id="profile-subtabs" style="margin-bottom:12px;">
+          <button class="tab active" data-ptab="bio" type="button">Bio &amp; Header</button>
+          <button class="tab" data-ptab="projects" type="button">Projects</button>
+          <button class="tab" data-ptab="skills" type="button">Skills</button>
+          <button class="tab" data-ptab="audit" type="button">AI Profile Check</button>
+          <button class="tab" data-ptab="raw" type="button">Raw JSON</button>
+        </div>
+
+        <div id="ptab-bio" class="ptab-panel">
+          <div class="config-grid">
+            <div><label class="field-label">Full Name</label><input id="prof-full-name" type="text" /></div>
+            <div><label class="field-label">Headline</label><input id="prof-headline" type="text" /></div>
+            <div><label class="field-label">Phone</label><input id="prof-phone" type="text" /></div>
+            <div><label class="field-label">Email</label><input id="prof-email" type="text" /></div>
+            <div><label class="field-label">Location</label><input id="prof-location" type="text" /></div>
+            <div><label class="field-label">LinkedIn</label><input id="prof-linkedin" type="text" /></div>
+            <div><label class="field-label">Work Rights</label><input id="prof-work-rights" type="text" /></div>
+            <div><label class="field-label">Languages</label><input id="prof-languages" type="text" /></div>
+          </div>
+          <div style="margin-top:10px;">
+            <label class="field-label">Bio / Professional Summary (used by AI for CV &amp; Cover Letter)</label>
+            <textarea id="prof-summary" rows="4" style="width:100%"></textarea>
+          </div>
+        </div>
+
+        <div id="ptab-projects" class="ptab-panel hidden">
+          <div class="section-row" style="margin-bottom:8px;">
+            <span class="help-text" style="margin:0;">Projects with tools/skills tags and verified achievement bullets.</span>
+            <button id="btn-add-project" class="btn btn-small btn-secondary" type="button">+ Add Project</button>
+          </div>
+          <div id="prof-projects-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+
+        <div id="ptab-skills" class="ptab-panel hidden">
+          <div class="section-row" style="margin-bottom:8px;">
+            <span class="help-text" style="margin:0;">Comma-separated skills per category.</span>
+            <button id="btn-add-skill-cat" class="btn btn-small btn-secondary" type="button">+ Add Category</button>
+          </div>
+          <div id="prof-skills-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </div>
+
+        <div id="ptab-audit" class="ptab-panel hidden">
+          <p class="help-text">
+            Run an AI check against your recent scanned jobs to spot missing skills, tools, or project bullet ideas you already have.
+          </p>
+          <button id="btn-run-profile-audit" class="btn btn-primary" type="button">Check Profile with AI</button>
+          <div id="prof-audit-results" style="margin-top:12px;"></div>
+        </div>
+
+        <div id="ptab-raw" class="ptab-panel hidden">
+          <p class="help-text">
+            Full JSON source of truth (edits here sync when saved).
+          </p>
+          <textarea id="profile-json-editor" rows="20" style="font-family:Consolas,monospace;font-size:12px;width:100%;"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span id="prof-save-status" style="font-size:12px;color:#86efac;margin-right:auto;"></span>
+        <button class="btn btn-secondary" onclick="closeModal('profile-modal')">Close</button>
+        <button id="btn-save-profile" class="btn btn-primary">Save Master Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phone Wi-Fi Sync Modal -->
+  <div id="sync-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-header">
+        <h2>Phone Wi-Fi Sync</h2>
+        <button class="btn-icon" onclick="closeModal('sync-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-text">
+          Make sure your phone and PC are on the same Wi-Fi network. Enter one of the URLs below in the <strong>Job Scout Android app</strong> (Settings &rarr; Desktop Wi-Fi Sync) and tap <strong>Sync Now</strong>.
+        </p>
+        <div id="sync-info-body" class="ai-provider-card">Loading network info...</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="loadJobs();loadStats();closeModal('sync-modal')">Refresh &amp; Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Job Link Modal -->
+  <div id="add-job-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:620px;">
+      <div class="modal-header">
+        <h2>Add SEEK Job by Link or ID</h2>
+        <button class="btn-icon" onclick="closeModal('add-job-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="help-text">
+          Paste any SEEK NZ or SEEK AU job link (or numeric job ID) that wasn't part of the automated scan. Job Scout will fetch the full description, screening questions, and hidden salary band, then let you tailor your CV/Cover Letter and use SEEK Assisted Apply.
+        </p>
+        <div class="config-section">
+          <label class="field-label">SEEK Job URL or Job ID</label>
+          <input id="add-job-url" type="text" placeholder="https://www.seek.co.nz/job/88123456  or  88123456" style="width:100%;" />
+        </div>
+        <div class="config-section">
+          <label class="field-label">Optional Tailoring Positioning Hint</label>
+          <input id="add-job-angle" type="text" placeholder="e.g., Emphasize PCB fault-finding, Altium layout, and prototype bring-up..." style="width:100%;" />
+        </div>
+        <div class="config-section">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+            <input id="add-job-probe" type="checkbox" checked />
+            Estimate hidden SEEK salary band automatically (~3s)
+          </label>
+        </div>
+        <div id="add-job-status" class="help-text hidden" style="color:#93c5fd;margin-top:6px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('add-job-modal')">Cancel</button>
+        <button id="btn-submit-import-only" class="btn btn-secondary" onclick="window.submitImportJob && window.submitImportJob(false)">Import Job Only</button>
+        <button id="btn-submit-import-tailor" class="btn btn-primary" onclick="window.submitImportJob && window.submitImportJob(true)">Import &amp; Tailor CV + Cover Letter</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=9"></script>
+</body>
+</html>

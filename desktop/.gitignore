@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+config/secrets.json
+config/candidate_profile.json
+config/scanner_config.json
+*.pdf
+*.db
+*.log

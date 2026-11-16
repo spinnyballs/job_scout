@@ -1,0 +1,44 @@
+[
+  {
+    "canonical_key": "work_rights_nz",
+    "question_pattern": "right to work in New Zealand / citizenship / visa status",
+    "answer": "I have unrestricted work rights in New Zealand (no sponsorship required).",
+    "category": "work_rights",
+    "notes": "Update with your exact visa or citizenship details."
+  },
+  {
+    "canonical_key": "work_rights_au",
+    "question_pattern": "right to work in Australia",
+    "answer": "Update with your Australian work rights status.",
+    "category": "work_rights",
+    "notes": ""
+  },
+  {
+    "canonical_key": "drivers_licence",
+    "question_pattern": "NZ driver's licence / full licence / own transport",
+    "answer": "Yes, I hold a full clean driver's licence.",
+    "category": "logistics",
+    "notes": "Update if needed."
+  },
+  {
+    "canonical_key": "notice_period",
+    "question_pattern": "notice period / availability to start",
+    "answer": "2–4 weeks notice.",
+    "category": "logistics",
+    "notes": "Verify against your employment agreement."
+  },
+  {
+    "canonical_key": "salary_expectation_nz",
+    "question_pattern": "salary expectation (annual NZD)",
+    "answer": "$75,000 – $95,000 NZD base depending on scope and total package.",
+    "category": "salary",
+    "notes": "Adjust per role."
+  },
+  {
+    "canonical_key": "police_clearance",
+    "question_pattern": "criminal convictions / background & security clearance check",
+    "answer": "Yes — clean record and eligible for standard background vetting.",
+    "category": "work_rights",
+    "notes": ""
+  }
+]

@@ -1,0 +1,42 @@
+# Python & virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Personal runtime data, SQLite DBs, browser cookies, generated CVs/PDFs
+desktop/data/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pdf
+
+# User configs & API secrets (use *.example.json as templates)
+desktop/config/secrets.json
+desktop/config/candidate_profile.json
+desktop/config/scanner_config.json
+config/secrets.json
+config/candidate_profile.json
+config/scanner_config.json
+.env
+.env.*
+
+# Android / Gradle build outputs & local SDK paths
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
