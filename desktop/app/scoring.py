@@ -73,7 +73,7 @@ def score_job(job: NormalizedJob, config: ScannerConfig) -> ScoreBreakdown:
                 blocked_reason=f"Blocked company keyword: '{kw}' in '{job.company}'",
             )
     # Also catch cases where a recruitment agency / anonymous listing mentions a blocked company in the job body
-    is_manual_import = "Manual Link" in (job.matched_queries or [])
+    is_manual_import = any(q in (job.matched_queries or []) for q in ("Manual Link", "Manual JD"))
     if (job.is_agency or company_lower in ("", "private advertiser")) and not is_manual_import:
         for blocked in config.blocked_companies:
             b = blocked.strip().lower()

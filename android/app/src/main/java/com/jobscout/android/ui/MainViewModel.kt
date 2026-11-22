@@ -7,13 +7,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jobscout.android.data.ConfigRepository
 import com.jobscout.android.data.JobDatabase
+import com.jobscout.android.domain.ManualJobParser
 import com.jobscout.android.domain.ScoringEngine
 import com.jobscout.android.domain.TailorService
 import com.jobscout.android.model.CandidateProfile
 import com.jobscout.android.model.CustomProviderPreset
+import com.jobscout.android.model.ExtractedJDMetadata
 import com.jobscout.android.model.JobRecord
 import com.jobscout.android.model.JobStatus
 import com.jobscout.android.model.LLMProviderConfig
+import com.jobscout.android.model.ManualPastePrefill
 import com.jobscout.android.model.NormalizedJob
 import com.jobscout.android.model.ProfileAuditSuggestions
 import com.jobscout.android.model.QABankEntry
@@ -29,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -83,6 +87,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _undoLabel = MutableStateFlow<String?>(null)
     val undoLabel: StateFlow<String?> = _undoLabel.asStateFlow()
+
+    private val _pendingPastePrefill = MutableStateFlow<ManualPastePrefill?>(null)
+    val pendingPastePrefill: StateFlow<ManualPastePrefill?> = _pendingPastePrefill.asStateFlow()
+
     private var pendingUndo: (() -> Unit)? = null
 
     private val pendingAngles = mutableMapOf<Long, String>()
@@ -265,7 +273,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importJobUrl(rawUrl: String, probeSalary: Boolean = true, onImported: ((JobRecord) -> Unit)? = null) {
+    fun requestPasteJdPrefill(url: String = "", jdText: String = "") {
+        _pendingPastePrefill.value = ManualPastePrefill(url = url, jdText = jdText)
+    }
+
+    fun clearPasteJdPrefill() {
+        _pendingPastePrefill.value = null
+    }
+
+    fun importJobUrl(
+        rawUrl: String,
+        probeSalary: Boolean = true,
+        andTailor: Boolean = false,
+        extraAngle: String = "",
+        onImported: ((JobRecord) -> Unit)? = null
+    ) {
         viewModelScope.launch {
             _busyMessage.value = "Importing SEEK job..."
             try {
@@ -290,15 +312,194 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val breakdown = ScoringEngine.scoreJob(enriched, cfg)
                 val (rowId, _) = db.upsertJob(enriched, breakdown)
+                var saved = db.getJob(rowId)
+                if (saved != null && saved.blockedReason == null && saved.status == JobStatus.DISCOVERED) {
+                    db.updateStatus(rowId, JobStatus.SHORTLISTED)
+                    saved = db.getJob(rowId)
+                }
                 refreshJobs()
-                val saved = db.getJob(rowId)
                 if (saved != null) {
                     _selectedJob.value = saved
                     onImported?.invoke(saved)
+                    if (andTailor && saved.status != JobStatus.BLOCKED) {
+                        enqueueTailor(saved.id, extraAngle)
+                    }
                 }
-                _toastMessage.value = "Imported: ${enriched.title}"
+                _toastMessage.value = if (andTailor && saved?.status != JobStatus.BLOCKED) {
+                    "Imported & queued tailoring: ${enriched.title}"
+                } else {
+                    "Imported: ${enriched.title}"
+                }
             } catch (e: Exception) {
                 _toastMessage.value = "Import failed: ${e.message}"
+            } finally {
+                _busyMessage.value = null
+            }
+        }
+    }
+
+    fun importPastedJob(
+        descriptionText: String,
+        title: String = "",
+        company: String = "",
+        location: String = "",
+        workType: String = "",
+        salaryLabel: String = "",
+        url: String = "",
+        screeningQuestionsRaw: String = "",
+        useAiExtract: Boolean = true,
+        andTailor: Boolean = false,
+        extraAngle: String = "",
+        onImported: ((JobRecord) -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            val rawJd = descriptionText.trim()
+            if (rawJd.length < 20) {
+                _toastMessage.value = "Please paste the job description text (at least a few lines)."
+                return@launch
+            }
+            _busyMessage.value = "Parsing & importing pasted JD..."
+            try {
+                val cfg = _config.value
+                val formatted = ManualJobParser.formatPastedJd(rawJd)
+                val heur = ManualJobParser.heuristicExtractJd(formatted.descriptionText)
+
+                val titleVal = title.trim()
+                val companyVal = company.trim()
+                val locVal = location.trim()
+                val wtVal = workType.trim()
+                val salVal = salaryLabel.trim()
+                val userQuestions = screeningQuestionsRaw.lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+
+                val needsAi = titleVal.isBlank() || companyVal.isBlank() || locVal.isBlank() || salVal.isBlank()
+                val aiMeta: ExtractedJDMetadata? = if (useAiExtract && needsAi) {
+                    runCatching {
+                        val provider = LlmProviderRegistry.create(cfg.llm, configRepo)
+                        TailorService.extractJdMetadata(provider, formatted.descriptionText, url)
+                    }.getOrNull()
+                } else {
+                    null
+                }
+
+                val finalTitle = titleVal
+                    .ifBlank { aiMeta?.title?.trim().orEmpty() }
+                    .ifBlank { heur.title }
+                    .ifBlank { "Untitled Role" }
+                val finalCompany = companyVal
+                    .ifBlank { aiMeta?.company?.trim().orEmpty() }
+                    .ifBlank { heur.company }
+                    .ifBlank { "Unknown Company" }
+                val finalLocation = locVal
+                    .ifBlank { aiMeta?.location?.trim().orEmpty() }
+                    .ifBlank { heur.location }
+                val finalWorkType = wtVal
+                    .ifBlank { aiMeta?.workType?.trim().orEmpty() }
+                    .ifBlank { heur.workType }
+                val finalWorkArr = aiMeta?.workArrangement?.trim().orEmpty()
+                    .ifBlank { heur.workArrangement }
+
+                val salSource = salVal
+                    .ifBlank { aiMeta?.salaryLabel?.trim().orEmpty() }
+                    .ifBlank { heur.salaryLabel }
+                val parsedSal = ManualJobParser.parseSalaryText(salSource)
+                val finalSalLabel = salVal
+                    .ifBlank { aiMeta?.salaryLabel?.trim().orEmpty() }
+                    .ifBlank { parsedSal.label }
+                    .ifBlank { heur.salaryLabel }
+                val salMin = parsedSal.min ?: aiMeta?.salaryEstMin ?: heur.salaryEstMin
+                val salMax = parsedSal.max ?: aiMeta?.salaryEstMax ?: heur.salaryEstMax
+
+                val finalBullets = formatted.bulletPoints.ifEmpty {
+                    aiMeta?.bulletPoints?.take(5).orEmpty()
+                }
+                val finalQuestions = userQuestions.ifEmpty {
+                    aiMeta?.screeningQuestions.orEmpty()
+                }
+
+                val cleanUrl = ManualJobParser.normalizeUrl(url)
+                val domain = ManualJobParser.extractUrlDomain(cleanUrl)
+                val externalId = ManualJobParser.computePasteExternalId(
+                    cleanUrl = cleanUrl,
+                    title = finalTitle,
+                    company = finalCompany,
+                    cleanText = formatted.descriptionText
+                )
+
+                val matchedQueries = mutableListOf("Manual JD")
+                if (domain.isNotBlank()) matchedQueries.add(domain)
+
+                val existing = db.getExistingRaw("manual", externalId)
+                val nowIso = Instant.now().toString()
+                val norm = if (existing != null) {
+                    recordToNormalized(existing).copy(
+                        url = cleanUrl.ifBlank { existing.url },
+                        title = finalTitle,
+                        company = finalCompany,
+                        location = finalLocation,
+                        workType = finalWorkType,
+                        workArrangement = finalWorkArr,
+                        teaser = formatted.teaser,
+                        bulletPoints = finalBullets,
+                        descriptionHtml = formatted.descriptionHtml,
+                        descriptionText = formatted.descriptionText,
+                        salaryLabel = finalSalLabel,
+                        salaryEstMin = salMin,
+                        salaryEstMax = salMax,
+                        isLinkOut = true,
+                        screeningQuestions = finalQuestions
+                    ).apply {
+                        for (mq in matchedQueries) {
+                            if (mq !in this.matchedQueries) this.matchedQueries.add(mq)
+                        }
+                    }
+                } else {
+                    NormalizedJob(
+                        source = "manual",
+                        externalId = externalId,
+                        url = cleanUrl,
+                        title = finalTitle,
+                        company = finalCompany,
+                        location = finalLocation,
+                        workType = finalWorkType,
+                        workArrangement = finalWorkArr,
+                        teaser = formatted.teaser,
+                        bulletPoints = finalBullets,
+                        descriptionHtml = formatted.descriptionHtml,
+                        descriptionText = formatted.descriptionText,
+                        salaryLabel = finalSalLabel,
+                        salaryEstMin = salMin,
+                        salaryEstMax = salMax,
+                        postedAt = nowIso,
+                        isLinkOut = true,
+                        screeningQuestions = finalQuestions,
+                        matchedQueries = matchedQueries
+                    )
+                }
+
+                val breakdown = ScoringEngine.scoreJob(norm, cfg)
+                val (rowId, _) = db.upsertJob(norm, breakdown)
+                var saved = db.getJob(rowId)
+                if (saved != null && saved.blockedReason == null && saved.status == JobStatus.DISCOVERED) {
+                    db.updateStatus(rowId, JobStatus.SHORTLISTED)
+                    saved = db.getJob(rowId)
+                }
+                refreshJobs()
+                if (saved != null) {
+                    _selectedJob.value = saved
+                    onImported?.invoke(saved)
+                    if (andTailor && saved.status != JobStatus.BLOCKED) {
+                        enqueueTailor(saved.id, extraAngle)
+                    }
+                }
+                _toastMessage.value = when {
+                    saved?.status == JobStatus.BLOCKED -> "Saved & blocked (blocklist match): ${saved.title}"
+                    andTailor -> "Imported & queued tailoring: $finalTitle"
+                    else -> "Imported: $finalTitle · $finalCompany (Score ${breakdown.score})"
+                }
+            } catch (e: Exception) {
+                _toastMessage.value = "Paste import failed: ${e.message}"
             } finally {
                 _busyMessage.value = null
             }
@@ -308,6 +509,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun probeSalary(jobId: Long) {
         viewModelScope.launch {
             val rec = db.getJob(jobId) ?: return@launch
+            if (rec.source == "manual") {
+                _toastMessage.value = "Hidden salary probing is only available for SEEK-listed jobs."
+                return@launch
+            }
             _busyMessage.value = "Estimating hidden SEEK salary..."
             try {
                 val cfg = _config.value
@@ -365,45 +570,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         enqueueTailor(jobId, extraAngle)
     }
 
+    private suspend fun renderPdfsForTailoredPayload(
+        rec: JobRecord,
+        payload: com.jobscout.android.model.TailoredApplicationPayload,
+        modelUsed: String
+    ) {
+        val profile = _profile.value
+        val folderName = "job_${rec.id}_${TailorService.slugify(rec.company)}_${TailorService.slugify(rec.title)}"
+        val outDir = File(getApplication<Application>().filesDir, "artifacts/$folderName")
+        outDir.mkdirs()
+
+        val baseName = "${TailorService.slugify(profile.fullName)}_${TailorService.slugify(rec.company)}_${TailorService.slugify(rec.title)}"
+        val cvFileName = "${baseName}_CV.pdf"
+        val clFileName = "${baseName}_Cover_Letter.pdf"
+
+        val cvHtml = TailorService.renderCvHtml(profile, payload)
+        val clHtml = TailorService.renderCoverLetterHtml(profile, payload, rec.title, rec.company)
+
+        val cvPdf = File(outDir, cvFileName)
+        val clPdf = File(outDir, clFileName)
+
+        WebViewPdfRenderer.renderHtmlToPdf(getApplication(), cvHtml, cvPdf)
+        WebViewPdfRenderer.renderHtmlToPdf(getApplication(), clHtml, clPdf)
+
+        WebViewPdfRenderer.copyToDownloads(getApplication(), cvPdf, cvFileName)
+        WebViewPdfRenderer.copyToDownloads(getApplication(), clPdf, clFileName)
+
+        db.saveTailoredPackage(
+            jobId = rec.id,
+            payload = payload,
+            modelUsed = modelUsed,
+            cvPdfPath = cvPdf.absolutePath,
+            clPdfPath = clPdf.absolutePath
+        )
+    }
+
     private suspend fun performTailor(jobId: Long, extraAngle: String) {
         val rec = db.getJob(jobId) ?: return
+        var savedPayload = false
         try {
             val provider = LlmProviderRegistry.create(_config.value.llm, configRepo)
             val profile = _profile.value
             val qa = db.listQaEntries()
             val payload = TailorService.generateTailoredPackage(provider, profile, rec, qa, extraAngle)
+            val modelName = provider.currentModelName()
 
-            val folderName = "job_${rec.id}_${TailorService.slugify(rec.company)}_${TailorService.slugify(rec.title)}"
-            val outDir = File(getApplication<Application>().filesDir, "artifacts/$folderName")
-            outDir.mkdirs()
-
-            val baseName = "${TailorService.slugify(profile.fullName)}_${TailorService.slugify(rec.company)}_${TailorService.slugify(rec.title)}"
-            val cvFileName = "${baseName}_CV.pdf"
-            val clFileName = "${baseName}_Cover_Letter.pdf"
-
-            val cvHtml = TailorService.renderCvHtml(profile, payload)
-            val clHtml = TailorService.renderCoverLetterHtml(profile, payload, rec.title, rec.company)
-
-            val cvPdf = File(outDir, cvFileName)
-            val clPdf = File(outDir, clFileName)
-
-            WebViewPdfRenderer.renderHtmlToPdf(getApplication(), cvHtml, cvPdf)
-            WebViewPdfRenderer.renderHtmlToPdf(getApplication(), clHtml, clPdf)
-
-            WebViewPdfRenderer.copyToDownloads(getApplication(), cvPdf, cvFileName)
-            WebViewPdfRenderer.copyToDownloads(getApplication(), clPdf, clFileName)
-
+            // Phase 1: Immediately persist the tailored JSON in SQLite BEFORE rendering PDFs
+            // so a WebView or background interruption never loses a billed LLM response.
             db.saveTailoredPackage(
                 jobId = jobId,
                 payload = payload,
-                modelUsed = provider.currentModelName(),
-                cvPdfPath = cvPdf.absolutePath,
-                clPdfPath = clPdf.absolutePath
+                modelUsed = modelName,
+                cvPdfPath = rec.cvPdfPath,
+                clPdfPath = rec.coverLetterPdfPath
             )
+            savedPayload = true
+            refreshJobs()
+
+            // Phase 2: Render A4 PDFs locally from the saved payload
+            renderPdfsForTailoredPayload(rec, payload, modelName)
             refreshJobs()
             _toastMessage.value = "Tailored PDFs saved to Downloads/JobScout: ${rec.title}"
         } catch (e: Exception) {
-            _toastMessage.value = "Tailoring failed (${rec.title.take(22)}): ${e.message}"
+            if (savedPayload) {
+                refreshJobs()
+                _toastMessage.value = "Tailored text saved! PDF render interrupted (${e.message}) — tap 'Build PDFs (No AI Call)'."
+            } else {
+                _toastMessage.value = "Tailoring failed (${rec.title.take(22)}): ${e.message}"
+            }
+        }
+    }
+
+    fun renderPdfsFromSavedPackage(jobId: Long) {
+        viewModelScope.launch {
+            val rec = db.getJob(jobId) ?: return@launch
+            val payload = rec.tailoredPackage
+            if (payload == null) {
+                _toastMessage.value = "No saved tailored text found for this job."
+                return@launch
+            }
+            _busyMessage.value = "Building A4 CV & Cover Letter PDFs from saved text..."
+            try {
+                renderPdfsForTailoredPayload(
+                    rec = rec,
+                    payload = payload,
+                    modelUsed = rec.tailoredModelUsed ?: "saved"
+                )
+                refreshJobs()
+                _toastMessage.value = "Built PDFs to Downloads/JobScout (no AI call used)"
+            } catch (e: Exception) {
+                _toastMessage.value = "PDF render failed: ${e.message}"
+            } finally {
+                _busyMessage.value = null
+            }
         }
     }
 
@@ -578,7 +837,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun syncWithDesktop(rawUrl: String, overwriteDesktopProfile: Boolean = true) {
         viewModelScope.launch {
-            _busyMessage.value = "Syncing with Desktop over Wi-Fi..."
+            _busyMessage.value = "Syncing with Desktop & checking live job availability..."
             try {
                 val normalized = SyncClient.normalizeBaseUrl(rawUrl)
                 configRepo.setDesktopSyncUrl(normalized)
@@ -591,13 +850,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     overwriteProfile = overwriteDesktopProfile,
                     jobs = jobsToSync
                 )
-                val phoneMarkedApplied = db.applyDesktopAppliedUpdates(res.allAppliedKeys)
+                val mergeSummary = db.mergeDesktopSyncPayload(
+                    desktopJobs = res.desktopJobs,
+                    statusUpdates = res.statusUpdates,
+                    expiredRemovedKeys = res.expiredRemovedKeys
+                )
                 refreshJobs()
 
                 val msg = buildString {
-                    append("Synced ${res.upserted} shortlisted/tailored job(s) to Desktop")
-                    if (res.markedAppliedOnDesktop > 0) append(", ${res.markedAppliedOnDesktop} applied → Desktop")
-                    if (phoneMarkedApplied > 0) append(", $phoneMarkedApplied marked Applied on Phone")
+                    append("Synced ${res.upserted} job(s) to Desktop")
+                    if (mergeSummary.insertedFromDesktop > 0) {
+                        append(", pulled ${mergeSummary.insertedFromDesktop} from Desktop")
+                    }
+                    if (mergeSummary.statusUpdatedOnPhone > 0) {
+                        append(", ${mergeSummary.statusUpdatedOnPhone} status(es) updated")
+                    }
+                    if (res.expiredMarkedOnDesktop > 0 || mergeSummary.expiredFlaggedOnPhone > 0) {
+                        val flagged = maxOf(res.expiredMarkedOnDesktop, mergeSummary.expiredFlaggedOnPhone)
+                        append(", $flagged expired flagged")
+                    }
+                    if (res.expiredRemovedOnDesktop > 0 || mergeSummary.expiredRemovedOnPhone > 0) {
+                        val deleted = maxOf(res.expiredRemovedOnDesktop, mergeSummary.expiredRemovedOnPhone)
+                        append(", $deleted expired pruned")
+                    }
                     if (overwriteDesktopProfile) append(", Profile synced")
                 }
                 _lastSyncSummary.value = msg
@@ -614,7 +889,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun pullProfileFromDesktop(rawUrl: String) {
         viewModelScope.launch {
-            _busyMessage.value = "Pulling Profile from Desktop..."
+            _busyMessage.value = "Pulling Profile & Pipeline from Desktop..."
             try {
                 val normalized = SyncClient.normalizeBaseUrl(rawUrl)
                 configRepo.setDesktopSyncUrl(normalized)
@@ -626,12 +901,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     overwriteProfile = false,
                     jobs = emptyList()
                 )
-                val phoneMarkedApplied = db.applyDesktopAppliedUpdates(res.allAppliedKeys)
+                val mergeSummary = db.mergeDesktopSyncPayload(
+                    desktopJobs = res.desktopJobs,
+                    statusUpdates = res.statusUpdates,
+                    expiredRemovedKeys = res.expiredRemovedKeys
+                )
                 refreshJobs()
                 if (res.serverProfile != null) {
                     _profile.value = configRepo.saveProfile(res.serverProfile)
                 }
-                val msg = "Pulled Desktop profile" + if (phoneMarkedApplied > 0) " & marked $phoneMarkedApplied Applied" else ""
+                val msg = buildString {
+                    append("Pulled Desktop profile")
+                    if (mergeSummary.insertedFromDesktop > 0) append(" & ${mergeSummary.insertedFromDesktop} desktop job(s)")
+                    if (mergeSummary.statusUpdatedOnPhone > 0) append(" (${mergeSummary.statusUpdatedOnPhone} status updated)")
+                }
                 _lastSyncSummary.value = msg
                 _toastMessage.value = msg
             } catch (e: Exception) {

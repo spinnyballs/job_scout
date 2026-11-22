@@ -98,7 +98,7 @@ object ScoringEngine {
             }
         }
 
-        val isManualImport = job.matchedQueries.contains("Manual Link")
+        val isManualImport = job.matchedQueries.contains("Manual Link") || job.matchedQueries.contains("Manual JD")
         if ((job.isAgency || companyLower.isBlank() || companyLower == "private advertiser") && !isManualImport) {
             val bodyLower = bodyText.lowercase()
             for (blocked in config.blockedCompanies) {
@@ -214,7 +214,11 @@ object ScoringEngine {
             score += 10
             flags.add("Mandarin Bonus")
         }
-        if (job.isLinkOut) flags.add("External ATS") else flags.add("Seek Quick Apply")
+        when {
+            job.source == "manual" -> flags.add("Pasted JD")
+            job.isLinkOut -> flags.add("External ATS")
+            else -> flags.add("Seek Quick Apply")
+        }
 
         return ScoreBreakdown(
             score = score.coerceIn(0, 100),

@@ -318,3 +318,32 @@ class PhoneSyncRequest(BaseModel):
     overwrite_profile: bool = True
     jobs: list[dict[str, Any]] = Field(default_factory=list)
 
+
+class ExtractedJDMetadata(BaseModel):
+    """Structured fields extracted from raw pasted JD text."""
+
+    title: str = ""
+    company: str = ""
+    location: str = ""
+    work_type: str = ""
+    work_arrangement: str = ""
+    salary_label: str = ""
+    salary_est_min: int | None = None
+    salary_est_max: int | None = None
+    bullet_points: list[str] = Field(default_factory=list)
+    screening_questions: list[str] = Field(default_factory=list)
+
+    @field_validator("title", "company", "location", "work_type", "work_arrangement", "salary_label", mode="before")
+    @classmethod
+    def _coerce_str(cls, v: Any) -> str:
+        return "" if v is None else str(v).strip()
+
+    @field_validator("bullet_points", "screening_questions", mode="before")
+    @classmethod
+    def _coerce_list(cls, v: Any) -> list[str]:
+        if not v:
+            return []
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if x is not None and str(x).strip()]
+        return [str(v).strip()]
+

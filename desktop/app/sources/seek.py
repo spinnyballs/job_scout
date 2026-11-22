@@ -72,6 +72,21 @@ query jobDetails($jobId: ID!, $jobDetailsViewedCorrelationId: String!, $sessionI
 }
 """
 
+_GQL_JOB_AVAILABILITY_QUERY = """
+query jobDetails($jobId: ID!, $jobDetailsViewedCorrelationId: String!, $sessionId: String!) {
+  jobDetails(
+    id: $jobId
+    tracking: {channel: "WEB", jobDetailsViewedCorrelationId: $jobDetailsViewedCorrelationId, sessionId: $sessionId}
+  ) {
+    job {
+      id
+      status
+      expiresAt { dateTimeUtc }
+    }
+  }
+}
+"""
+
 _SALARY_NUM_RE = re.compile(r"\$\s*(\d{2,3}(?:,\d{3})+|\d{2,3}(?:\.\d+)?\s*[kK]|\d{2,3})\b")
 
 
@@ -287,6 +302,7 @@ class _BaseSeekAdapter(JobBoardAdapter):
         if not detail:
             if not job.title:
                 raise ValueError(f"SEEK job {job.external_id} was not found or is no longer active.")
+            job.is_expired = True
             return job
 
         if detail.get("title") and not job.title:
@@ -346,6 +362,32 @@ class _BaseSeekAdapter(JobBoardAdapter):
 
         job.raw_detail_json = detail
         return job
+
+    async def check_availability(self, external_id: str) -> tuple[bool, str | None]:
+        """Lightweight GraphQL check returning (is_expired, expires_at_utc)."""
+        gql_body = {
+            "query": _GQL_JOB_AVAILABILITY_QUERY,
+            "variables": {
+                "jobId": str(external_id),
+                "jobDetailsViewedCorrelationId": str(uuid.uuid4()),
+                "sessionId": self._session_id,
+            },
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "seek-request-brand": "seek",
+            "seek-request-country": self.country_code,
+        }
+        resp = await self._client.post(self.graphql_url, json=gql_body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        detail = ((data.get("data") or {}).get("jobDetails") or {}).get("job")
+        if not detail:
+            return (True, None)
+        status_str = (detail.get("status") or "").strip().lower()
+        expires_utc = ((detail.get("expiresAt") or {}).get("dateTimeUtc") or "").strip() or None
+        is_exp = status_str not in ("active", "")
+        return (is_exp, expires_utc)
 
     async def _job_in_salary_band(self, job: NormalizedJob, low: int, high: int) -> bool:
         await asyncio.sleep(0.12)  # Gentle pacing during binary search

@@ -172,6 +172,38 @@ object TailorService {
         )
     }
 
+    private val EXTRACT_JD_SCHEMA_HINT = """
+        {
+          "title": "string",
+          "company": "string",
+          "location": "string",
+          "work_type": "string",
+          "work_arrangement": "string",
+          "salary_label": "string",
+          "salary_est_min": 90000,
+          "salary_est_max": 110000,
+          "bullet_points": ["string"],
+          "screening_questions": ["string"]
+        }
+    """.trimIndent()
+
+    suspend fun extractJdMetadata(
+        provider: LlmProvider,
+        cleanText: String,
+        url: String = ""
+    ): com.jobscout.android.model.ExtractedJDMetadata {
+        val systemPrompt = "Extract structured metadata from the pasted job posting. " +
+            "Only extract values explicitly present in the text; leave missing fields empty or null."
+        val userPrompt = "URL: ${url.trim().ifBlank { "N/A" }}\n\nJOB POSTING TEXT:\n${cleanText.take(8000)}"
+        return provider.generateStructured(
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            schemaHintJson = EXTRACT_JD_SCHEMA_HINT,
+            serializer = com.jobscout.android.model.ExtractedJDMetadata.serializer(),
+            temperature = 0.1
+        )
+    }
+
     fun slugify(text: String): String =
         text.replace(Regex("[^a-zA-Z0-9]+"), "_").trim('_').take(48).ifEmpty { "role" }
 

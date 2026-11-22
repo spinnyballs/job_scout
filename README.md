@@ -6,8 +6,8 @@ A self-hosted desktop dashboard (**FastAPI + Playwright**) and companion **Andro
 
 ## Repository Structure
 
-- [`desktop/`](desktop/) — Python FastAPI web dashboard, SEEK scanner, hidden salary binary-search prober, parallel AI CV/Cover Letter tailoring queue, Playwright SEEK Quick Apply copilot, and Phone Wi-Fi Sync server.
-- [`android/`](android/) — Native Kotlin + Jetpack Compose Android companion app with SEEK link/share-sheet import, on-device A4 PDF rendering, Q&A memory, and LAN Wi-Fi Sync with Desktop.
+- [`desktop/`](desktop/) — Python FastAPI web dashboard, SEEK scanner, Paste JD importer (LinkedIn/Indeed/company sites), hidden salary binary-search prober, parallel AI CV/Cover Letter tailoring queue, Playwright SEEK Quick Apply copilot, and bidirectional Phone Wi-Fi Sync server with live SEEK expiry checks.
+- [`android/`](android/) — Native Kotlin + Jetpack Compose Android companion app with SEEK link/share-sheet & Paste JD import, unified pipeline categories & swipe triage, resilient SSE-streaming LLM tailoring, on-device A4 PDF rendering (including zero-API-cost rebuild from saved text), Q&A memory, and bidirectional LAN Wi-Fi Sync with Desktop.
 
 ## Quick Start (Desktop)
 

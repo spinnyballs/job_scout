@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Job Scout — SEEK Scanner & Triage</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7" />
+  <link rel="stylesheet" href="/static/styles.css?v=8" />
 </head>
 <body>
   <div class="app-shell">
@@ -26,7 +26,8 @@
         <button id="btn-profile" class="btn btn-secondary">Master Profile</button>
         <button id="btn-ai-settings" class="btn btn-secondary">AI Providers</button>
         <button id="btn-config" class="btn btn-secondary">Queries &amp; Guardrails</button>
-        <button id="btn-add-job" class="btn btn-green" onclick="window.openAddJobModal && window.openAddJobModal()" title="Import a SEEK job by URL or ID">+ Add Job Link</button>
+        <button id="btn-add-job" class="btn btn-green" onclick="window.openAddJobModal && window.openAddJobModal('seek')" title="Import a SEEK job by URL or ID">+ Add SEEK Link</button>
+        <button id="btn-paste-jd" class="btn btn-green" onclick="window.openAddJobModal && window.openAddJobModal('paste')" title="Paste a job description from LinkedIn, company career sites, or any other job board">+ Paste JD</button>
         <button id="btn-scan" class="btn btn-primary">Run Scan Now</button>
       </div>
     </header>
@@ -85,7 +86,6 @@
     <section class="toolbar">
       <div class="tabs" id="status-tabs">
         <button class="tab active" data-status="all">All Active</button>
-        <button class="tab" data-status="phone_synced">From Phone (<span id="tab-phone-count">0</span>)</button>
         <button class="tab" data-status="discovered">Discovered</button>
         <button class="tab" data-status="shortlisted">Shortlisted</button>
         <button class="tab" data-status="tailored">Tailored</button>
@@ -151,7 +151,7 @@
       </div>
       <div class="modal-body">
         <p class="help-text">
-          Edit search profiles, employer blocklist (add your current or past employers to block them automatically), and scoring weights. Saving automatically re-scores existing jobs.
+          Edit search profiles, employer blocklist (Aeroqual / Industrial Scientific / Fortive are blocked by default), and scoring weights. Saving automatically re-scores existing jobs.
         </p>
 
         <div class="config-section">
@@ -441,30 +441,84 @@
     </div>
   </div>
 
-  <!-- Add Job Link Modal -->
+  <!-- Add Job Modal (SEEK Link or Paste JD) -->
   <div id="add-job-modal" class="modal-backdrop hidden">
-    <div class="modal" style="max-width:620px;">
+    <div class="modal" style="max-width:760px;">
       <div class="modal-header">
-        <h2>Add SEEK Job by Link or ID</h2>
+        <h2 id="add-job-modal-title">Add Job to Job Scout</h2>
         <button class="btn-icon" onclick="closeModal('add-job-modal')">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="help-text">
-          Paste any SEEK NZ or SEEK AU job link (or numeric job ID) that wasn't part of the automated scan. Job Scout will fetch the full description, screening questions, and hidden salary band, then let you tailor your CV/Cover Letter and use SEEK Assisted Apply.
-        </p>
-        <div class="config-section">
-          <label class="field-label">SEEK Job URL or Job ID</label>
-          <input id="add-job-url" type="text" placeholder="https://www.seek.co.nz/job/88123456  or  88123456" style="width:100%;" />
+        <div class="tabs" id="import-mode-tabs" style="margin-bottom:12px;">
+          <button id="import-tab-seek" class="tab active" type="button" onclick="window.switchImportMode && window.switchImportMode('seek')">SEEK Link / ID</button>
+          <button id="import-tab-paste" class="tab" type="button" onclick="window.switchImportMode && window.switchImportMode('paste')">Paste JD (Other Sites)</button>
         </div>
+
+        <div id="import-panel-seek">
+          <p class="help-text">
+            Paste any SEEK NZ or SEEK AU job link (or numeric job ID) that wasn't part of the automated scan. Job Scout will fetch the full description, screening questions, and hidden salary band, then let you tailor your CV/Cover Letter and use SEEK Assisted Apply.
+          </p>
+          <div class="config-section">
+            <label class="field-label">SEEK Job URL or Job ID</label>
+            <input id="add-job-url" type="text" placeholder="https://www.seek.co.nz/job/88123456  or  88123456" style="width:100%;" />
+          </div>
+          <div class="config-section">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+              <input id="add-job-probe" type="checkbox" checked />
+              Estimate hidden SEEK salary band automatically (~3s)
+            </label>
+          </div>
+        </div>
+
+        <div id="import-panel-paste" class="hidden">
+          <p class="help-text">
+            Paste any job description from LinkedIn, company career pages, Indeed, Trade Me, or emails. Leave Title, Company, Location, or Salary blank to auto-extract them from the JD text — it will be scored, tailored, tracked, and synced just like a SEEK job.
+          </p>
+          <div class="config-section">
+            <label class="field-label">Job Description (Required — paste full JD text)</label>
+            <textarea id="paste-jd-text" rows="8" placeholder="Paste the full job ad / description here..." style="width:100%;"></textarea>
+          </div>
+          <div class="config-grid">
+            <div class="config-section">
+              <label class="field-label">Job Title (optional — auto-detected if blank)</label>
+              <input id="paste-jd-title" type="text" placeholder="e.g., Embedded Systems Engineer" style="width:100%;" />
+            </div>
+            <div class="config-section">
+              <label class="field-label">Company (optional — auto-detected if blank)</label>
+              <input id="paste-jd-company" type="text" placeholder="e.g., Rocket Lab" style="width:100%;" />
+            </div>
+            <div class="config-section">
+              <label class="field-label">Location (optional)</label>
+              <input id="paste-jd-location" type="text" placeholder="e.g., Auckland, NZ" style="width:100%;" />
+            </div>
+            <div class="config-section">
+              <label class="field-label">Salary / Range (optional)</label>
+              <input id="paste-jd-salary" type="text" placeholder="e.g., $90k - $110k NZD" style="width:100%;" />
+            </div>
+            <div class="config-section">
+              <label class="field-label">Work Type / Arrangement (optional)</label>
+              <input id="paste-jd-worktype" type="text" placeholder="e.g., Full time · Hybrid" style="width:100%;" />
+            </div>
+            <div class="config-section">
+              <label class="field-label">Job Posting URL (optional)</label>
+              <input id="paste-jd-url" type="text" placeholder="https://www.linkedin.com/jobs/view/..." style="width:100%;" />
+            </div>
+          </div>
+          <div class="config-section">
+            <label class="field-label">Screening Questions (optional — one per line)</label>
+            <textarea id="paste-jd-questions" rows="2" placeholder="Paste any application questions here (optional)..." style="width:100%;"></textarea>
+          </div>
+          <div class="config-section">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+              <input id="paste-jd-ai-extract" type="checkbox" checked />
+              Auto-extract missing Title / Company / Location / Salary using AI (falls back to pattern parser if no API key)
+            </label>
+          </div>
+        </div>
+
         <div class="config-section">
           <label class="field-label">Optional Tailoring Positioning Hint</label>
           <input id="add-job-angle" type="text" placeholder="e.g., Emphasize PCB fault-finding, Altium layout, and prototype bring-up..." style="width:100%;" />
-        </div>
-        <div class="config-section">
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
-            <input id="add-job-probe" type="checkbox" checked />
-            Estimate hidden SEEK salary band automatically (~3s)
-          </label>
         </div>
         <div id="add-job-status" class="help-text hidden" style="color:#93c5fd;margin-top:6px;"></div>
       </div>
@@ -476,6 +530,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

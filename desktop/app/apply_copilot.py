@@ -439,7 +439,19 @@ class ApplyCopilotManager:
             filled: list[str] = []
             unmatched: list[str] = []
 
-            job_url = job["url"]
+            job_url = (job.get("url") or "").strip()
+            if not job_url:
+                self.last_session = {
+                    "active": False,
+                    "stage": "no_url",
+                    "message": "No posting URL was saved for this pasted job. Open the application page in your browser and use the tailored CV/Cover Letter PDFs above.",
+                    "job_id": job["id"],
+                    "filled_fields": filled,
+                    "unmatched_questions": unmatched,
+                    "current_url": "",
+                }
+                return self.last_session
+
             # Use nz.seek.com so the job page shares the exact domain/cookies as SEEK Browser Login and avoids www.seek.co.nz challenges
             if "www.seek.co.nz/job/" in job_url:
                 job_url = job_url.replace("www.seek.co.nz/job/", "nz.seek.com/job/")
@@ -450,23 +462,26 @@ class ApplyCopilotManager:
             await page.goto(job_url, wait_until="domcontentloaded", timeout=25000)
             await page.bring_to_front()
 
-            apply_btn = page.locator(
-                'a[data-automation="job-detail-apply"]:visible, '
-                'button[data-automation="job-detail-apply"]:visible, '
-                'a[data-testid="job-detail-apply"]:visible, '
-                'button[data-testid="job-detail-apply"]:visible'
-            ).first
-            try:
-                await apply_btn.wait_for(state="visible", timeout=6000)
-            except Exception:
-                await page.wait_for_timeout(1200)
-
             is_external = bool(job.get("is_link_out"))
-            if await apply_btn.count() > 0:
-                href = await apply_btn.get_attribute("href")
-                target_attr = await apply_btn.get_attribute("target")
-                if href and "seek.co" not in href and "seek.com" not in href and href.startswith("http"):
-                    is_external = True
+            is_seek_url = "seek.co" in job_url.lower() or "seek.com" in job_url.lower()
+
+            if is_seek_url:
+                apply_btn = page.locator(
+                    'a[data-automation="job-detail-apply"]:visible, '
+                    'button[data-automation="job-detail-apply"]:visible, '
+                    'a[data-testid="job-detail-apply"]:visible, '
+                    'button[data-testid="job-detail-apply"]:visible'
+                ).first
+                try:
+                    await apply_btn.wait_for(state="visible", timeout=6000)
+                except Exception:
+                    await page.wait_for_timeout(1200)
+
+                if await apply_btn.count() > 0:
+                    href = await apply_btn.get_attribute("href")
+                    target_attr = await apply_btn.get_attribute("target")
+                    if href and "seek.co" not in href and "seek.com" not in href and href.startswith("http"):
+                        is_external = True
 
                 if is_external or target_attr == "_blank":
                     try:

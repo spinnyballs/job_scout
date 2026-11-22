@@ -52,9 +52,18 @@ class MainActivity : ComponentActivity() {
 
     private fun handleShareIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
-            if ("seek." in sharedText.lowercase() || Regex("\\b\\d{7,10}\\b").containsMatchIn(sharedText)) {
+            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim() ?: return
+            if ("seek." in sharedText.lowercase() || Regex("^\\s*\\d{6,12}\\s*$").containsMatchIn(sharedText) || Regex("/job/\\d{6,12}").containsMatchIn(sharedText)) {
                 vm.importJobUrl(sharedText, probeSalary = true)
+            } else {
+                val urlMatch = Regex("https?://\\S+", RegexOption.IGNORE_CASE).find(sharedText)
+                val foundUrl = urlMatch?.value?.trimEnd('.', ',', ')', ']') ?: ""
+                val strippedJd = if (foundUrl.isNotBlank() && sharedText.equals(foundUrl, ignoreCase = true)) {
+                    ""
+                } else {
+                    sharedText
+                }
+                vm.requestPasteJdPrefill(url = foundUrl, jdText = strippedJd)
             }
         }
     }
@@ -78,6 +87,7 @@ private fun JobScoutApp(vm: MainViewModel) {
     val undoLabel by vm.undoLabel.collectAsState()
     val desktopSyncUrl by vm.desktopSyncUrl.collectAsState()
     val lastSyncSummary by vm.lastSyncSummary.collectAsState()
+    val pendingPastePrefill by vm.pendingPastePrefill.collectAsState()
 
     var currentTab by remember { mutableIntStateOf(0) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -102,6 +112,13 @@ private fun JobScoutApp(vm: MainViewModel) {
 
     LaunchedEffect(selectedJob?.id, currentTab) {
         snackbarHostState.currentSnackbarData?.dismiss()
+    }
+
+    LaunchedEffect(pendingPastePrefill) {
+        if (pendingPastePrefill != null) {
+            vm.selectJob(null)
+            currentTab = 0
+        }
     }
 
     LaunchedEffect(toastMessage) {
@@ -138,6 +155,7 @@ private fun JobScoutApp(vm: MainViewModel) {
                 onProbeSalary = { vm.probeSalary(it) },
                 onAnalyzeFit = { vm.analyzeFit(it) },
                 onTailorAndPdf = { id, angle -> vm.tailorAndRenderPdf(id, angle) },
+                onRenderSavedPdfs = { vm.renderPdfsFromSavedPackage(it) },
                 onOpenPdf = { vm.sharePdf(it) },
                 onStatusChange = { id, status -> vm.updateStatus(id, status) }
             )
@@ -189,10 +207,34 @@ private fun JobScoutApp(vm: MainViewModel) {
                             statusFilter = statusFilter,
                             tailorQueue = tailorQueue,
                             activeTailorId = activeTailorId,
+                            pendingPastePrefill = pendingPastePrefill,
+                            onConsumePastePrefill = { vm.clearPasteJdPrefill() },
                             onSearchChange = { vm.setSearchText(it) },
                             onStatusFilterChange = { vm.setStatusFilter(it) },
                             onRunScan = { vm.runScan() },
-                            onImportUrl = { vm.importJobUrl(it) },
+                            onImportUrl = { url, probeSalary, andTailor, extraAngle ->
+                                vm.importJobUrl(
+                                    rawUrl = url,
+                                    probeSalary = probeSalary,
+                                    andTailor = andTailor,
+                                    extraAngle = extraAngle
+                                )
+                            },
+                            onImportPastedJob = { jd, title, company, loc, wt, sal, url, qs, useAi, andTailor, extraAngle ->
+                                vm.importPastedJob(
+                                    descriptionText = jd,
+                                    title = title,
+                                    company = company,
+                                    location = loc,
+                                    workType = wt,
+                                    salaryLabel = sal,
+                                    url = url,
+                                    screeningQuestionsRaw = qs,
+                                    useAiExtract = useAi,
+                                    andTailor = andTailor,
+                                    extraAngle = extraAngle
+                                )
+                            },
                             onSelectJob = { vm.selectJob(it) },
                             onSwipeStatus = { job, status -> vm.swipeStatusChange(job, status) },
                             onEnqueueTailor = { vm.enqueueTailor(it) },

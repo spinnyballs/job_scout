@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLink
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.PostAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -29,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.jobscout.android.model.JobRecord
 import com.jobscout.android.model.JobStatus
+import com.jobscout.android.model.ManualPastePrefill
 import com.jobscout.android.model.ScanProgress
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,17 +43,83 @@ fun JobsScreen(
     statusFilter: String?,
     tailorQueue: Set<Long>,
     activeTailorId: Long?,
+    pendingPastePrefill: ManualPastePrefill? = null,
+    onConsumePastePrefill: () -> Unit = {},
     onSearchChange: (String) -> Unit,
     onStatusFilterChange: (String?) -> Unit,
     onRunScan: () -> Unit,
-    onImportUrl: (String) -> Unit,
+    onImportUrl: (url: String, probeSalary: Boolean, andTailor: Boolean, extraAngle: String) -> Unit,
+    onImportPastedJob: (
+        descriptionText: String,
+        title: String,
+        company: String,
+        location: String,
+        workType: String,
+        salaryLabel: String,
+        url: String,
+        screeningQuestionsRaw: String,
+        useAiExtract: Boolean,
+        andTailor: Boolean,
+        extraAngle: String
+    ) -> Unit,
     onSelectJob: (JobRecord) -> Unit,
     onSwipeStatus: (JobRecord, JobStatus) -> Unit,
     onEnqueueTailor: (Long) -> Unit,
     onResetTailored: (Long) -> Unit
 ) {
     var showImportDialog by remember { mutableStateOf(false) }
+    var importModeTab by remember { mutableIntStateOf(0) } // 0 = SEEK Link, 1 = Paste JD
+    var urlText by remember { mutableStateOf("") }
+    var seekProbeSalary by remember { mutableStateOf(true) }
+    var pasteJdText by remember { mutableStateOf("") }
+    var pasteTitle by remember { mutableStateOf("") }
+    var pasteCompany by remember { mutableStateOf("") }
+    var pasteLocation by remember { mutableStateOf("") }
+    var pasteSalary by remember { mutableStateOf("") }
+    var pasteWorkType by remember { mutableStateOf("") }
+    var pasteUrl by remember { mutableStateOf("") }
+    var pasteQuestions by remember { mutableStateOf("") }
+    var pasteUseAi by remember { mutableStateOf(true) }
+    var importExtraAngle by remember { mutableStateOf("") }
+    var showMorePasteFields by remember { mutableStateOf(false) }
     var pendingResetJob by remember { mutableStateOf<JobRecord?>(null) }
+
+    LaunchedEffect(pendingPastePrefill) {
+        pendingPastePrefill?.let { prefill ->
+            importModeTab = 1
+            pasteJdText = prefill.jdText
+            pasteUrl = prefill.url
+            pasteTitle = ""
+            pasteCompany = ""
+            pasteLocation = ""
+            pasteSalary = ""
+            pasteWorkType = ""
+            pasteQuestions = ""
+            importExtraAngle = ""
+            showMorePasteFields = prefill.url.isNotBlank()
+            showImportDialog = true
+            onConsumePastePrefill()
+        }
+    }
+
+    fun openImportModal(mode: Int) {
+        importModeTab = mode
+        if (mode == 0) {
+            urlText = ""
+        } else {
+            pasteJdText = ""
+            pasteTitle = ""
+            pasteCompany = ""
+            pasteLocation = ""
+            pasteSalary = ""
+            pasteWorkType = ""
+            pasteUrl = ""
+            pasteQuestions = ""
+            showMorePasteFields = false
+        }
+        importExtraAngle = ""
+        showImportDialog = true
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Search + Actions Row
@@ -59,22 +128,26 @@ fun JobsScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             OutlinedTextField(
                 value = searchText,
                 onValueChange = onSearchChange,
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Search title, company...") },
+                placeholder = { Text("Search...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true
             )
-            FilledTonalIconButton(onClick = { showImportDialog = true }) {
+            FilledTonalIconButton(onClick = { openImportModal(0) }) {
                 Icon(Icons.Default.AddLink, contentDescription = "Import SEEK URL")
+            }
+            FilledTonalIconButton(onClick = { openImportModal(1) }) {
+                Icon(Icons.Default.PostAdd, contentDescription = "Paste JD (Other Sites)")
             }
             Button(
                 onClick = onRunScan,
-                enabled = !scanProgress.isRunning
+                enabled = !scanProgress.isRunning,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
@@ -118,7 +191,10 @@ fun JobsScreen(
                 "shortlisted" to "Shortlisted",
                 "tailored" to "Tailored",
                 "applied" to "Applied",
-                "skipped" to "Skipped"
+                "interview" to "Interview",
+                "no_reply,rejected" to "No Reply / Closed",
+                "skipped" to "Skipped",
+                "blocked" to "Blocked"
             )
             filters.forEach { (key, label) ->
                 FilterChip(
@@ -135,7 +211,7 @@ fun JobsScreen(
                     Text("No jobs in this view", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Tap Scan to fetch SEEK NZ roles, or tap the link icon to import a SEEK URL.",
+                        "Tap Scan to fetch SEEK NZ roles, the link icon for a SEEK URL, or the paste icon for LinkedIn / Indeed / company JDs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -164,35 +240,192 @@ fun JobsScreen(
     }
 
     if (showImportDialog) {
-        var urlText by remember { mutableStateOf("") }
+        val canSubmit = if (importModeTab == 0) urlText.isNotBlank() else pasteJdText.trim().length >= 20
+
+        fun submitImport(andTailor: Boolean) {
+            if (!canSubmit) return
+            if (importModeTab == 0) {
+                onImportUrl(urlText, seekProbeSalary, andTailor, importExtraAngle)
+            } else {
+                onImportPastedJob(
+                    pasteJdText,
+                    pasteTitle,
+                    pasteCompany,
+                    pasteLocation,
+                    pasteWorkType,
+                    pasteSalary,
+                    pasteUrl,
+                    pasteQuestions,
+                    pasteUseAi,
+                    andTailor,
+                    importExtraAngle
+                )
+            }
+            showImportDialog = false
+        }
+
         AlertDialog(
             onDismissRequest = { showImportDialog = false },
-            title = { Text("Import SEEK Job Link") },
+            title = { Text("Add Job to Job Scout") },
             text = {
-                Column {
-                    Text(
-                        "Paste any SEEK NZ/AU job URL or numeric ID (or use Android's Share button from SEEK/Chrome).",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TabRow(selectedTabIndex = importModeTab) {
+                        Tab(
+                            selected = importModeTab == 0,
+                            onClick = { importModeTab = 0 },
+                            text = { Text("SEEK Link") }
+                        )
+                        Tab(
+                            selected = importModeTab == 1,
+                            onClick = { importModeTab = 1 },
+                            text = { Text("Paste JD (Other)") }
+                        )
+                    }
+
+                    if (importModeTab == 0) {
+                        Text(
+                            "Paste any SEEK NZ/AU job URL or numeric ID (or Share directly from SEEK/Chrome).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = urlText,
+                            onValueChange = { urlText = it },
+                            label = { Text("SEEK Job URL or ID") },
+                            placeholder = { Text("https://www.seek.co.nz/job/...") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { seekProbeSalary = !seekProbeSalary }
+                        ) {
+                            Checkbox(checked = seekProbeSalary, onCheckedChange = { seekProbeSalary = it })
+                            Text("Estimate hidden SEEK salary band", style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else {
+                        Text(
+                            "Paste any JD from LinkedIn, Indeed, Trade Me, or company sites. Blank Title/Company/Location/Salary will be auto-extracted.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = pasteJdText,
+                            onValueChange = { pasteJdText = it },
+                            label = { Text("Job Description *") },
+                            placeholder = { Text("Paste the full job ad / description here...") },
+                            minLines = 4,
+                            maxLines = 8,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = pasteTitle,
+                                onValueChange = { pasteTitle = it },
+                                label = { Text("Title (opt.)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = pasteCompany,
+                                onValueChange = { pasteCompany = it },
+                                label = { Text("Company (opt.)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        TextButton(
+                            onClick = { showMorePasteFields = !showMorePasteFields },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                        ) {
+                            Text(
+                                if (showMorePasteFields) "Hide optional fields ▲"
+                                else "Location, Salary, URL & Questions ▼"
+                            )
+                        }
+                        if (showMorePasteFields) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = pasteLocation,
+                                    onValueChange = { pasteLocation = it },
+                                    label = { Text("Location") },
+                                    placeholder = { Text("Auckland") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedTextField(
+                                    value = pasteSalary,
+                                    onValueChange = { pasteSalary = it },
+                                    label = { Text("Salary") },
+                                    placeholder = { Text("$90k-$110k") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            OutlinedTextField(
+                                value = pasteWorkType,
+                                onValueChange = { pasteWorkType = it },
+                                label = { Text("Work Type (opt.)") },
+                                placeholder = { Text("Full time") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = pasteUrl,
+                                onValueChange = { pasteUrl = it },
+                                label = { Text("Posting URL (opt.)") },
+                                placeholder = { Text("https://www.linkedin.com/jobs/...") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = pasteQuestions,
+                                onValueChange = { pasteQuestions = it },
+                                label = { Text("Screening Questions (one/line)") },
+                                minLines = 2,
+                                maxLines = 4,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { pasteUseAi = !pasteUseAi }
+                        ) {
+                            Checkbox(checked = pasteUseAi, onCheckedChange = { pasteUseAi = it })
+                            Text(
+                                "Auto-extract missing fields with AI (parser fallback)",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
-                        value = urlText,
-                        onValueChange = { urlText = it },
-                        placeholder = { Text("https://www.seek.co.nz/job/...") },
+                        value = importExtraAngle,
+                        onValueChange = { importExtraAngle = it },
+                        label = { Text("Tailoring Positioning Hint (opt.)") },
+                        placeholder = { Text("e.g., Emphasize PCB bring-up & embedded C") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (urlText.isNotBlank()) {
-                            onImportUrl(urlText)
-                            showImportDialog = false
-                        }
-                    }
-                ) { Text("Import") }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = { submitImport(false) },
+                        enabled = canSubmit
+                    ) { Text("Import") }
+                    Button(
+                        onClick = { submitImport(true) },
+                        enabled = canSubmit
+                    ) { Text("Import & Tailor") }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showImportDialog = false }) { Text("Cancel") }
@@ -259,6 +492,14 @@ private fun SwipeableJobItem(
             startSpec = SwipeSpec("Applied", Icons.Default.DoneAll, Color(0xFF15803D))
             endSpec = SwipeSpec("Reset PDFs", Icons.Default.DeleteSweep, Color(0xFFD97706))
         }
+        "applied" -> {
+            startSpec = SwipeSpec("Interview", Icons.Default.Check, Color(0xFF1D4ED8))
+            endSpec = SwipeSpec("No Reply", Icons.Default.Close, Color(0xFF64748B))
+        }
+        "interview" -> {
+            startSpec = null
+            endSpec = SwipeSpec("Rejected", Icons.Default.Close, Color(0xFFDC2626))
+        }
         else -> {
             startSpec = null
             endSpec = null
@@ -288,6 +529,7 @@ private fun SwipeableJobItem(
                         null, "discovered" -> currentOnSwipeStatus(JobStatus.SHORTLISTED)
                         "shortlisted" -> currentOnEnqueueTailor()
                         "tailored" -> currentOnSwipeStatus(JobStatus.APPLIED)
+                        "applied" -> currentOnSwipeStatus(JobStatus.INTERVIEW)
                     }
                     false
                 }
@@ -295,6 +537,8 @@ private fun SwipeableJobItem(
                     when (currentFilter) {
                         null, "discovered", "shortlisted" -> currentOnSwipeStatus(JobStatus.SKIPPED)
                         "tailored" -> currentOnRequestResetTailored()
+                        "applied" -> currentOnSwipeStatus(JobStatus.NO_REPLY)
+                        "interview" -> currentOnSwipeStatus(JobStatus.REJECTED)
                     }
                     false
                 }
@@ -368,8 +612,13 @@ private fun JobCard(
     }
     val salaryText = job.salaryLabel.ifBlank {
         if (job.salaryEstMin != null) "~$${job.salaryEstMin / 1000}k–$${(job.salaryEstMax ?: job.salaryEstMin) / 1000}k"
+        else if (job.source == "manual") "Salary unlisted"
         else "Salary unprobed"
     }
+    val subLine = listOfNotNull(
+        job.company.takeIf { it.isNotBlank() },
+        job.location.takeIf { it.isNotBlank() }
+    ).joinToString(" · ").ifBlank { "Details pending" }
 
     Card(
         modifier = Modifier
@@ -405,7 +654,7 @@ private fun JobCard(
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "${job.company} · ${job.location}",
+                text = subLine,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -426,6 +675,46 @@ private fun JobCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (job.isExpired) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = MaterialTheme.shapes.extraSmall
+                        ) {
+                            Text(
+                                text = "EXPIRED",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (job.syncedFromDesktop) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            shape = MaterialTheme.shapes.extraSmall
+                        ) {
+                            Text(
+                                text = "FROM PC",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (job.source == "manual") {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            shape = MaterialTheme.shapes.extraSmall
+                        ) {
+                            Text(
+                                text = "PASTED JD",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                     if (isActiveTailoring) {
                         AssistChip(
                             onClick = onClick,
@@ -463,7 +752,7 @@ private fun JobCard(
                         )
                     }
                     Text(
-                        text = job.status.value.uppercase(),
+                        text = job.status.displayLabel().uppercase(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.secondary
                     )

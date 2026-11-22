@@ -53,3 +53,20 @@ class DirectATSStubAdapter(JobBoardAdapter):
 
     async def enrich_detail(self, job: NormalizedJob) -> NormalizedJob:
         return job
+
+
+@register_adapter
+class ManualPasteAdapter(JobBoardAdapter):
+    source_id = "manual"
+    display_name = "Pasted JD / Other Sites"
+    region = "Any"
+    supports_salary_probe = False
+    is_ready = False
+
+    async def search(self, query: SearchQueryConfig) -> AsyncIterator[NormalizedJob]:
+        raise NotImplementedError("Manual pasted jobs do not run scheduled scans")
+        yield  # pragma: no cover
+
+    async def enrich_detail(self, job: NormalizedJob) -> NormalizedJob:
+        return job
+

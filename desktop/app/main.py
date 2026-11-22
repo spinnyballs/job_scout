@@ -129,6 +129,21 @@ class ImportJobUrlRequest(BaseModel):
     extra_angle: str = ""
 
 
+class ImportJobPasteRequest(BaseModel):
+    description_text: str
+    title: str = ""
+    company: str = ""
+    location: str = ""
+    work_type: str = ""
+    work_arrangement: str = ""
+    salary_label: str = ""
+    url: str = ""
+    screening_questions: list[str] = []
+    use_ai_extract: bool = True
+    auto_tailor: bool = False
+    extra_angle: str = ""
+
+
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -226,6 +241,52 @@ async def api_import_job_url(req: ImportJobUrlRequest) -> dict[str, Any]:
     return {"job": job, "tailor_error": tailor_error}
 
 
+@app.post("/api/jobs/import-paste")
+async def api_import_job_paste(req: ImportJobPasteRequest) -> dict[str, Any]:
+    cfg = config_mgr.load()
+    provider = None
+    needs_ai = not (
+        req.title.strip() and req.company.strip() and req.location.strip() and req.salary_label.strip()
+    )
+    if req.use_ai_extract and needs_ai:
+        try:
+            provider = get_llm_provider(cfg.llm, secrets_mgr)
+        except ValueError:
+            provider = None
+
+    try:
+        job = await orchestrator.import_pasted_job(
+            description_text=req.description_text,
+            title=req.title,
+            company=req.company,
+            location=req.location,
+            work_type=req.work_type,
+            work_arrangement=req.work_arrangement,
+            salary_label=req.salary_label,
+            url=req.url,
+            screening_questions=req.screening_questions,
+            use_ai_extract=req.use_ai_extract,
+            llm_provider=provider,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Import pasted job failed")
+        raise HTTPException(status_code=500, detail=f"Failed to import pasted JD: {exc}") from exc
+
+    tailor_error: str | None = None
+    if req.auto_tailor and job and not job.get("blocked_reason"):
+        try:
+            tailor_res = await api_tailor_job(job["id"], TailorRequest(extra_angle=req.extra_angle))
+            job = tailor_res["job"]
+        except HTTPException as exc:
+            tailor_error = str(exc.detail)
+        except Exception as exc:
+            tailor_error = str(exc)
+
+    return {"job": job, "tailor_error": tailor_error}
+
+
 @app.patch("/api/jobs/{job_id}")
 async def api_patch_job(job_id: int, req: JobPatchRequest) -> dict[str, Any]:
     updated = store.update_job_triage(
@@ -244,6 +305,8 @@ async def api_probe_salary(job_id: int) -> dict[str, Any]:
         return await orchestrator.probe_single_job_salary(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Salary probe failed: {exc}") from exc
 
@@ -407,7 +470,7 @@ class TailorQueueManager:
             if jid in self.active_jobs or jid in self.queued_ids or jid in self._tasks or jid in valid_new:
                 continue
             job = store.get_job(jid)
-            if not job or job.get("status") == "blocked" or job.get("blocked_reason"):
+            if not job or job.get("status") == "blocked":
                 continue
             valid_new.append(jid)
             if extra_angle.strip():
@@ -681,6 +744,7 @@ async def api_sync_info(request: Request) -> dict[str, Any]:
         "sync_urls": [f"http://{ip}:{port}" for ip in ips],
         "port": port,
         "synced_from_phone": stats.get("synced_from_phone", 0),
+        "pipeline_count": len(store.list_desktop_pipeline_jobs_for_phone()),
         "applied_count": len(store.get_applied_keys()),
     }
 
@@ -689,12 +753,31 @@ async def api_sync_info(request: Request) -> dict[str, Any]:
 async def api_sync_phone(req: PhoneSyncRequest) -> dict[str, Any]:
     if req.profile is not None and req.overwrite_profile:
         profile_mgr.save(req.profile)
+    # 1. Merge incoming phone jobs & resolve status priority first so new phone jobs are also checked for availability
     sync_res = store.sync_phone_jobs(req.jobs)
+    # 2. Check availability / expiry on active pipeline jobs and recent non-pipeline SEEK jobs
+    expiry_res = await orchestrator.check_and_prune_expired_jobs(max_non_pipeline_seek=30)
+    # 3. Re-read authoritative status_updates and desktop_jobs after expiry pass
+    touched_keys = [
+        ((item.get("source") or "seek_nz").strip(), str(item.get("external_id") or "").strip())
+        for item in req.jobs
+        if item.get("external_id")
+    ]
+    status_updates = store.list_status_updates_for_phone(touched_keys)
+    applied_updates = [
+        u for u in status_updates if u["status"] in ("applied", "interview", "no_reply", "rejected")
+    ]
     return {
         "ok": True,
         "profile_overwritten": bool(req.profile is not None and req.overwrite_profile),
         "server_profile": profile_mgr.load().model_dump(),
-        **sync_res,
+        "upserted": sync_res["upserted"],
+        "marked_applied_on_desktop": sync_res["marked_applied_on_desktop"],
+        "applied_updates": applied_updates,
+        "all_applied_keys": store.get_applied_keys(),
+        "status_updates": status_updates,
+        "desktop_jobs": store.list_desktop_pipeline_jobs_for_phone(),
+        **expiry_res,
     }
 
 
@@ -733,7 +816,7 @@ async def api_prepare_apply(job_id: int, req: PrepareApplyRequest | None = None)
     job = store.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.get("status") == "blocked" or job.get("blocked_reason"):
+    if job.get("status") == "blocked":
         raise HTTPException(status_code=403, detail=f"Blocked by employer guardrail: {job.get('blocked_reason')}")
 
     cfg = config_mgr.load()

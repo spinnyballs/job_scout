@@ -138,9 +138,6 @@ async function loadStats() {
   const closedCount = stats.no_reply_closed ?? ((stats.by_status?.no_reply ?? 0) + (stats.by_status?.rejected ?? 0));
   if ($("stat-closed")) $("stat-closed").textContent = closedCount;
   $("stat-blocked").textContent = stats.by_status?.blocked ?? 0;
-  if ($("tab-phone-count")) {
-    $("tab-phone-count").textContent = stats.synced_from_phone ?? 0;
-  }
   if ($("tab-closed-count")) {
     $("tab-closed-count").textContent = closedCount;
   }
@@ -156,14 +153,12 @@ async function loadStats() {
 
 async function loadJobs() {
   const params = new URLSearchParams();
-  if (state.statusTab === "phone_synced") {
-    params.set("synced_from_phone", "true");
-  } else if (state.statusTab !== "all") {
+  if (state.statusTab !== "all") {
     params.set("status", state.statusTab);
   }
   if (state.statusTab === "blocked") params.set("include_blocked", "true");
   const minScore = parseInt($("minscore-filter").value, 10);
-  const bypassScoreTabs = new Set(["blocked", "phone_synced", "applied", "interview", "no_reply,rejected"]);
+  const bypassScoreTabs = new Set(["blocked", "shortlisted", "tailored", "applied", "interview", "no_reply,rejected"]);
   if (minScore > 0 && !bypassScoreTabs.has(state.statusTab)) {
     params.set("min_score", String(minScore));
   }
@@ -244,6 +239,7 @@ function renderJobList() {
         "job-card",
         job.id === state.selectedId ? "selected" : "",
         isChecked ? "batch-checked" : "",
+        job.is_expired ? "is-expired" : "",
         `status-${job.status}`,
       ]
         .filter(Boolean)
@@ -272,8 +268,10 @@ function renderJobList() {
             ${job.posted_at ? `<span>· ${escapeHtml(formatRelDate(job.posted_at))}</span>` : ""}
           </div>
           <div class="job-tags">
+            ${job.is_expired ? '<span class="tag expired" title="This listing is no longer active or has expired">Expired</span>' : ""}
             ${isTailoringNow ? '<span class="tag queue-active">Tailoring...</span>' : ""}
             ${isQueued ? '<span class="tag queue-pending">Queued</span>' : ""}
+            ${job.source === "manual" ? '<span class="tag" style="background:rgba(167,139,250,0.16);color:#ddd6fe;border-color:rgba(167,139,250,0.4);">Pasted JD</span>' : ""}
             ${job.synced_from_phone ? '<span class="tag" style="background:rgba(56,189,248,0.18);color:#7dd3fc;">From Phone</span>' : ""}
             ${sal ? `<span class="tag salary">${escapeHtml(sal)}</span>` : ""}
             ${job.llm_fit_score != null ? `<span class="tag llm-score">AI ${job.llm_fit_score}/100</span>` : ""}
@@ -324,11 +322,15 @@ async function selectJob(jobId) {
 function renderJobDetail(job) {
   const pane = $("detail-pane");
   const bd = job.score_breakdown || {};
-  const sal = formatSalary(job) || "Not disclosed (click Probe Salary)";
+  const isManual = job.source === "manual";
+  const sal = formatSalary(job) || (isManual ? "Not specified" : "Not disclosed (click Probe Salary)");
   const posChips = (bd.matched_positive || []).map((p) => `<span class="chip-pos">+ ${escapeHtml(p)}</span>`).join("");
   const negChips = (bd.matched_negative || []).map((n) => `<span class="chip-neg">- ${escapeHtml(n)}</span>`).join("");
   const queries = (job.matched_queries || []).map((q) => `<span class="tag">${escapeHtml(q)}</span>`).join("");
   const questions = job.screening_questions || [];
+  const openBtnHtml = job.url
+    ? `<a class="btn btn-primary" href="${escapeHtml(job.url)}" target="_blank" rel="noopener">${isManual ? "Open Posting &nearr;" : "Open on SEEK &nearr;"}</a>`
+    : "";
 
   pane.innerHTML = `
     <div class="detail-header">
@@ -336,11 +338,11 @@ function renderJobDetail(job) {
         <h2>${escapeHtml(job.title)}</h2>
         <div class="detail-sub">
           <strong>${escapeHtml(job.company)}</strong>
-          <span>· ${escapeHtml(job.location)}</span>
+          ${job.location ? `<span>· ${escapeHtml(job.location)}</span>` : ""}
           ${job.work_type ? `<span>· ${escapeHtml(job.work_type)}</span>` : ""}
           ${job.work_arrangement ? `<span>· ${escapeHtml(job.work_arrangement)}</span>` : ""}
           <span>· <strong>Salary:</strong> ${escapeHtml(sal)}</span>
-          ${job.posted_at ? `<span>· Posted ${escapeHtml(formatRelDate(job.posted_at))}</span>` : ""}
+          ${job.posted_at ? `<span>· ${isManual ? "Added" : "Posted"} ${escapeHtml(formatRelDate(job.posted_at))}</span>` : ""}
         </div>
       </div>
       <span class="score-pill ${scoreClass(job)}" style="font-size:14px;padding:4px 12px;">
@@ -354,12 +356,13 @@ function renderJobDetail(job) {
       <button class="btn btn-secondary" style="border-color:rgba(245,158,11,0.5);color:#fcd34d;" onclick="markJobApplied(${job.id}, 'no_reply')" title="Move to No Reply / Closed (no response received)">No Reply</button>
       <button class="btn btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="markJobApplied(${job.id}, 'rejected')" title="Move to No Reply / Closed (did not go through / rejected)">Not Selected</button>
       <button class="btn btn-secondary" onclick="updateStatus(${job.id}, 'discovered')">Reset</button>
-      <button class="btn btn-secondary" id="btn-probe-sal" onclick="probeSalary(${job.id})">Estimate Hidden Salary</button>
+      ${!isManual ? `<button class="btn btn-secondary" id="btn-probe-sal" onclick="probeSalary(${job.id})">Estimate Hidden Salary</button>` : ""}
       <button class="btn btn-secondary" onclick="blockCompany(${JSON.stringify(job.company).replaceAll('"', '&quot;')})">Block Company</button>
-      <a class="btn btn-primary" href="${escapeHtml(job.url)}" target="_blank" rel="noopener">Open on SEEK &nearr;</a>
+      ${openBtnHtml}
     </div>
 
-    ${job.blocked_reason ? `<div class="questions-box" style="border-color:rgba(239,68,68,0.5);background:rgba(239,68,68,0.1)"><h4>Employer Guardrail Triggered</h4><div>${escapeHtml(job.blocked_reason)}</div></div>` : ""}
+    ${job.is_expired ? `<div class="questions-box" style="border-color:rgba(239,68,68,0.55);background:rgba(239,68,68,0.12)"><h4 style="color:#fca5a5">Listing Expired</h4><div>This job listing is no longer active on ${isManual ? "the job board" : "SEEK"}${job.expires_at ? ` (expired ${escapeHtml(formatRelDate(job.expires_at))})` : ""}. Kept in your pipeline because it is ${escapeHtml(job.status)}.</div></div>` : ""}
+    ${job.blocked_reason ? `<div class="questions-box" style="border-color:rgba(239,68,68,0.5);background:rgba(239,68,68,0.1)"><h4>Employer Guardrail Triggered${job.status !== "blocked" ? " (Overridden — Hand-Selected)" : ""}</h4><div>${escapeHtml(job.blocked_reason)}</div></div>` : ""}
 
     <div class="breakdown-box">
       <h4>Match Breakdown &amp; Search Profiles</h4>
@@ -677,8 +680,8 @@ function renderCopilotPanel(job) {
         <div>${appliedInfo}</div>
       </div>
       <div class="copilot-actions" style="margin-top:8px;">
-        <button class="btn btn-small btn-primary" id="btn-prep-apply" onclick="prepareApply(${job.id}, false)">
-          ${job.is_link_out ? "Open External ATS + Pre-Fill" : "Prepare SEEK Quick Apply (Stops Before Submit)"}
+        <button class="btn btn-small btn-primary" id="btn-prep-apply" onclick="prepareApply(${job.id}, false)" ${!job.url ? "disabled title='No URL saved for this pasted job'" : ""}>
+          ${!job.url ? "No Posting URL Saved" : (job.is_link_out ? "Open External ATS + Pre-Fill" : "Prepare SEEK Quick Apply (Stops Before Submit)")}
         </button>
         <button class="btn btn-small btn-green" onclick="markJobApplied(${job.id}, 'applied')">
           ${isApplied ? "Log Applied Update" : "Mark as Applied"}
@@ -759,7 +762,7 @@ window.prepareApply = async (jobId, ignoreCooldown) => {
     if (stCheck.isolated_desktop) {
       alert(
         "Job Scout needs to run from your interactive Windows desktop to display browser windows.\n\n" +
-        "Double-click  start_dashboard.bat  in your Job Scout folder and refresh this page."
+        "Double-click  d:\\maru\\fight the HR\\job_agent\\start_dashboard.bat  in File Explorer and refresh this page."
       );
       return;
     }
@@ -835,7 +838,7 @@ async function openSeekLoginWindow() {
         "Job Scout is currently running inside an isolated background session, so Windows hides browser popups launched from it.\n\n" +
         "Fix (takes 5 seconds):\n" +
         "1. Close/ignore this background instance.\n" +
-        "2. Double-click  start_dashboard.bat  in your Job Scout folder from File Explorer."
+        "2. Double-click  d:\\maru\\fight the HR\\job_agent\\start_dashboard.bat  from File Explorer."
       );
       return;
     }
@@ -1466,52 +1469,113 @@ async function openPhoneSyncModal() {
           <button class="btn btn-small btn-secondary" onclick="navigator.clipboard.writeText(${JSON.stringify(u).replaceAll('"', '&quot;')})">Copy</button>
         </div>`).join("") : '<div style="color:#fcd34d;">Could not detect LAN IP — check ipconfig / Wi-Fi connection.</div>'}
       <div style="font-size:12px;color:#93a0b8;margin-top:10px;">
-        Synced from phone: <strong>${info.synced_from_phone}</strong> · Applied on desktop: <strong>${info.applied_count}</strong>
+        Active from phone: <strong>${info.synced_from_phone}</strong> · Total pipeline (Shortlisted → Closed): <strong>${info.pipeline_count ?? info.applied_count}</strong> · Applied+: <strong>${info.applied_count}</strong>
       </div>`;
   } catch (e) {
     $("sync-info-body").textContent = "Error: " + e.message;
   }
 }
 
-/* Add Job by Link Modal */
-function openAddJobModal() {
+/* Add Job Modal (SEEK Link or Paste JD) */
+let _importMode = "seek";
+
+function switchImportMode(mode) {
+  _importMode = mode === "paste" ? "paste" : "seek";
+  $("import-tab-seek")?.classList.toggle("active", _importMode === "seek");
+  $("import-tab-paste")?.classList.toggle("active", _importMode === "paste");
+  $("import-panel-seek")?.classList.toggle("hidden", _importMode !== "seek");
+  $("import-panel-paste")?.classList.toggle("hidden", _importMode !== "paste");
+  if ($("add-job-modal-title")) {
+    $("add-job-modal-title").textContent =
+      _importMode === "paste" ? "Paste Non-SEEK Job Description" : "Add SEEK Job by Link or ID";
+  }
+  setTimeout(() => {
+    (_importMode === "paste" ? $("paste-jd-text") : $("add-job-url"))?.focus();
+  }, 40);
+}
+window.switchImportMode = switchImportMode;
+
+function openAddJobModal(mode = "seek") {
   $("add-job-url").value = "";
   $("add-job-angle").value = "";
+  if ($("paste-jd-text")) $("paste-jd-text").value = "";
+  if ($("paste-jd-title")) $("paste-jd-title").value = "";
+  if ($("paste-jd-company")) $("paste-jd-company").value = "";
+  if ($("paste-jd-location")) $("paste-jd-location").value = "";
+  if ($("paste-jd-salary")) $("paste-jd-salary").value = "";
+  if ($("paste-jd-worktype")) $("paste-jd-worktype").value = "";
+  if ($("paste-jd-url")) $("paste-jd-url").value = "";
+  if ($("paste-jd-questions")) $("paste-jd-questions").value = "";
   $("add-job-status").classList.add("hidden");
   $("add-job-status").textContent = "";
   $("add-job-modal").classList.remove("hidden");
-  setTimeout(() => $("add-job-url").focus(), 50);
+  switchImportMode(mode);
 }
 window.openAddJobModal = openAddJobModal;
 
 async function submitImportJob(autoTailor) {
-  const url = $("add-job-url").value.trim();
   const extra_angle = $("add-job-angle").value.trim();
-  const probe_salary = $("add-job-probe").checked;
-  if (!url) {
-    alert("Please paste a SEEK job URL or numeric job ID.");
-    return;
-  }
-
   const btnOnly = $("btn-submit-import-only");
   const btnTailor = $("btn-submit-import-tailor");
   const statusEl = $("add-job-status");
+
+  let endpoint = "/api/jobs/import-url";
+  let payload;
+
+  if (_importMode === "paste") {
+    const description_text = $("paste-jd-text").value.trim();
+    if (description_text.length < 20) {
+      alert("Please paste the job description text first.");
+      return;
+    }
+    const workRaw = ($("paste-jd-worktype")?.value || "").trim();
+    const questionsRaw = ($("paste-jd-questions")?.value || "")
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    endpoint = "/api/jobs/import-paste";
+    payload = {
+      description_text,
+      title: ($("paste-jd-title")?.value || "").trim(),
+      company: ($("paste-jd-company")?.value || "").trim(),
+      location: ($("paste-jd-location")?.value || "").trim(),
+      salary_label: ($("paste-jd-salary")?.value || "").trim(),
+      work_type: workRaw,
+      url: ($("paste-jd-url")?.value || "").trim(),
+      screening_questions: questionsRaw,
+      use_ai_extract: $("paste-jd-ai-extract") ? $("paste-jd-ai-extract").checked : true,
+      auto_tailor: !!autoTailor,
+      extra_angle,
+    };
+    statusEl.textContent = autoTailor
+      ? "Parsing JD, scoring fit, and generating tailored CV + Cover Letter PDFs..."
+      : "Parsing JD details and scoring against your profile...";
+  } else {
+    const url = $("add-job-url").value.trim();
+    const probe_salary = $("add-job-probe").checked;
+    if (!url) {
+      alert("Please paste a SEEK job URL or numeric job ID.");
+      return;
+    }
+    payload = {
+      url,
+      probe_salary,
+      auto_tailor: !!autoTailor,
+      extra_angle,
+    };
+    statusEl.textContent = autoTailor
+      ? "Fetching SEEK job details, probing salary, and generating tailored CV + Cover Letter PDFs..."
+      : "Fetching SEEK job details and estimating hidden salary...";
+  }
+
   btnOnly.disabled = true;
   btnTailor.disabled = true;
   statusEl.classList.remove("hidden");
-  statusEl.textContent = autoTailor
-    ? "Fetching SEEK job details, probing salary, and generating tailored CV + Cover Letter PDFs..."
-    : "Fetching SEEK job details and estimating hidden salary...";
 
   try {
-    const res = await api("/api/jobs/import-url", {
+    const res = await api(endpoint, {
       method: "POST",
-      body: JSON.stringify({
-        url,
-        probe_salary,
-        auto_tailor: !!autoTailor,
-        extra_angle,
-      }),
+      body: JSON.stringify(payload),
     });
     const job = res.job;
     closeModal("add-job-modal");
@@ -1543,7 +1607,7 @@ async function submitImportJob(autoTailor) {
       if (res.tailor_error.includes("API key")) openAISettingsModal();
     }
   } catch (e) {
-    alert("Could not import job link: " + e.message);
+    alert("Could not import job: " + e.message);
   } finally {
     btnOnly.disabled = false;
     btnTailor.disabled = false;

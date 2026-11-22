@@ -19,6 +19,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import kotlinx.coroutines.delay
+import java.io.BufferedReader
+import java.io.IOException
+import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 interface LlmProvider {
@@ -37,7 +41,10 @@ interface LlmProvider {
 
 private val sharedHttpClient = OkHttpClient.Builder()
     .connectTimeout(30, TimeUnit.SECONDS)
-    .readTimeout(120, TimeUnit.SECONDS)
+    .writeTimeout(30, TimeUnit.SECONDS)
+    .readTimeout(180, TimeUnit.SECONDS)
+    .pingInterval(15, TimeUnit.SECONDS)
+    .retryOnConnectionFailure(true)
     .build()
 
 private val sharedJson = Json {
@@ -45,13 +52,145 @@ private val sharedJson = Json {
     isLenient = true
 }
 
-private fun stripMarkdownFences(raw: String): String {
+/**
+ * Extracts a clean JSON object string from raw LLM output:
+ * 1. Strips markdown ```json ... ``` fences if present.
+ * 2. Finds the outermost balanced `{ ... }` block (respecting string quotes and escapes),
+ *    so trailing commentary or a connection drop after the closing `}` never discards a valid response.
+ */
+fun extractCleanJsonBlock(raw: String): String {
     var s = raw.trim()
     if (s.startsWith("```")) {
-        s = s.removePrefix("```json").removePrefix("```").trim()
+        s = s.removePrefix("```json").removePrefix("```JSON").removePrefix("```").trim()
         if (s.endsWith("```")) s = s.dropLast(3).trim()
     }
-    return s
+    val startIdx = s.indexOf('{')
+    if (startIdx < 0) return s
+
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (i in startIdx until s.length) {
+        val ch = s[i]
+        if (escaped) {
+            escaped = false
+            continue
+        }
+        if (ch == '\\' && inString) {
+            escaped = true
+            continue
+        }
+        if (ch == '"') {
+            inString = !inString
+            continue
+        }
+        if (!inString) {
+            if (ch == '{') {
+                depth++
+            } else if (ch == '}') {
+                depth--
+                if (depth == 0) {
+                    return s.substring(startIdx, i + 1)
+                }
+            }
+        }
+    }
+    val lastBrace = s.lastIndexOf('}')
+    if (lastBrace > startIdx) {
+        return s.substring(startIdx, lastBrace + 1)
+    }
+    return s.substring(startIdx)
+}
+
+/**
+ * Executes an HTTP request with automatic retry on pre-response connection failures,
+ * and reads SSE streamed chunks continuously so mobile NAT / unstable Wi-Fi sockets never sit idle.
+ * If the stream drops *after* a complete JSON object `{ ... }` has already been received,
+ * recovers and returns the accumulated text instead of wasting the billed API call.
+ */
+private suspend fun executeStreamingLlmCall(
+    requestBuilder: () -> Request,
+    providerLabel: String,
+    parseSseDataLine: (String) -> String?,
+    parseNonStreamBody: (String) -> String?
+): String {
+    var lastException: Exception? = null
+    for (attempt in 1..2) {
+        val accumulated = StringBuilder()
+        var receivedAnyChunk = false
+        try {
+            val req = requestBuilder()
+            sharedHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val errTxt = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+                    throw IllegalStateException("$providerLabel HTTP ${resp.code}: $errTxt")
+                }
+                val body = resp.body ?: throw IllegalStateException("$providerLabel returned empty body.")
+                val contentType = resp.header("Content-Type").orEmpty().lowercase()
+
+                BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
+                    val rawLines = StringBuilder()
+                    var sawSseData = false
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("data:")) {
+                            sawSseData = true
+                            val dataPayload = trimmed.removePrefix("data:").trim()
+                            if (dataPayload == "[DONE]" || dataPayload.isEmpty()) continue
+                            val piece = runCatching { parseSseDataLine(dataPayload) }.getOrNull()
+                            if (!piece.isNullOrEmpty()) {
+                                accumulated.append(piece)
+                                receivedAnyChunk = true
+                            }
+                        } else if (!sawSseData && !contentType.contains("event-stream")) {
+                            rawLines.appendLine(line)
+                        }
+                    }
+                    if (!sawSseData && rawLines.isNotEmpty()) {
+                        val fullText = rawLines.toString().trim()
+                        val extracted = parseNonStreamBody(fullText)
+                        if (!extracted.isNullOrEmpty()) {
+                            accumulated.append(extracted)
+                            receivedAnyChunk = true
+                        }
+                    }
+                }
+            }
+            val finalStr = accumulated.toString().trim()
+            if (finalStr.isNotEmpty()) return finalStr
+            throw IllegalStateException("$providerLabel returned an empty completion.")
+        } catch (e: IOException) {
+            // Check if we already received a complete balanced JSON object before the tail-end socket drop
+            if (receivedAnyChunk) {
+                val partial = accumulated.toString().trim()
+                val candidate = extractCleanJsonBlock(partial)
+                if (candidate.startsWith("{") && candidate.endsWith("}") &&
+                    runCatching { sharedJson.parseToJsonElement(candidate) }.isSuccess
+                ) {
+                    return candidate
+                }
+                // Generation already started on server; do not re-bill unless nothing usable arrived
+                throw IOException("$providerLabel stream interrupted over unstable network (${e.message})", e)
+            }
+            lastException = e
+            if (attempt < 2) {
+                delay(1200L * attempt)
+            }
+        } catch (e: Exception) {
+            if (receivedAnyChunk) {
+                val partial = accumulated.toString().trim()
+                val candidate = extractCleanJsonBlock(partial)
+                if (candidate.startsWith("{") && candidate.endsWith("}") &&
+                    runCatching { sharedJson.parseToJsonElement(candidate) }.isSuccess
+                ) {
+                    return candidate
+                }
+            }
+            throw e
+        }
+    }
+    throw lastException ?: IllegalStateException("$providerLabel request failed.")
 }
 
 class GeminiProvider(
@@ -73,7 +212,7 @@ class GeminiProvider(
         require(apiKey.isNotBlank()) {
             "Gemini API key not configured. Add ${config.geminiApiKeyEnv} in Settings."
         }
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/${config.geminiModel}:generateContent?key=$apiKey"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/${config.geminiModel}:streamGenerateContent?alt=sse&key=$apiKey"
         val augmentedSystem = "$systemPrompt\n\nReturn ONLY valid JSON matching this schema:\n$schemaHintJson"
         val payload = buildJsonObject {
             put("systemInstruction", buildJsonObject {
@@ -101,23 +240,44 @@ class GeminiProvider(
             })
         }
 
-        val req = Request.Builder()
-            .url(url)
-            .post(payload.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        val respBody = sharedHttpClient.newCall(req).execute().use { resp ->
-            val txt = resp.body?.string() ?: "{}"
-            if (!resp.isSuccessful) throw IllegalStateException("Gemini HTTP ${resp.code}: $txt")
-            txt
-        }
-        val root = sharedJson.parseToJsonElement(respBody).jsonObject
-        val text = root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
-            ?.get("content")?.jsonObject
-            ?.get("parts")?.jsonArray?.firstOrNull()?.jsonObject
-            ?.get("text")?.jsonPrimitive?.contentOrNull
-            ?: throw IllegalStateException("Gemini returned empty response.")
-        sharedJson.decodeFromString(serializer, stripMarkdownFences(text))
+        val bodyBytes = payload.toString()
+        val rawText = executeStreamingLlmCall(
+            requestBuilder = {
+                Request.Builder()
+                    .url(url)
+                    .header("Accept", "text/event-stream")
+                    .post(bodyBytes.toRequestBody("application/json".toMediaType()))
+                    .build()
+            },
+            providerLabel = "Gemini",
+            parseSseDataLine = { dataJson ->
+                val obj = sharedJson.parseToJsonElement(dataJson).jsonObject
+                val parts = obj["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+                    ?.get("content")?.jsonObject
+                    ?.get("parts")?.jsonArray
+                parts?.joinToString("") { part ->
+                    part.jsonObject["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                }
+            },
+            parseNonStreamBody = { fullBody ->
+                val el = sharedJson.parseToJsonElement(fullBody)
+                when (el) {
+                    is JsonObject -> el["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+                        ?.get("content")?.jsonObject
+                        ?.get("parts")?.jsonArray?.firstOrNull()?.jsonObject
+                        ?.get("text")?.jsonPrimitive?.contentOrNull
+                    is JsonArray -> el.joinToString("") { item ->
+                        item.jsonObject["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+                            ?.get("content")?.jsonObject
+                            ?.get("parts")?.jsonArray?.joinToString("") { p ->
+                                p.jsonObject["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                            }.orEmpty()
+                    }
+                    else -> null
+                }
+            }
+        )
+        sharedJson.decodeFromString(serializer, extractCleanJsonBlock(rawText))
     }
 }
 
@@ -151,6 +311,7 @@ open class OpenAiCompatibleProvider(
 
         val payload = buildJsonObject {
             put("model", model)
+            put("stream", true)
             put("messages", buildJsonArray {
                 add(buildJsonObject {
                     put("role", "system")
@@ -167,24 +328,32 @@ open class OpenAiCompatibleProvider(
             }
         }
 
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer ${key.ifBlank { "ollama-local" }}")
-            .header("Content-Type", "application/json")
-            .post(payload.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        val respBody = sharedHttpClient.newCall(req).execute().use { resp ->
-            val txt = resp.body?.string() ?: "{}"
-            if (!resp.isSuccessful) throw IllegalStateException("$displayName HTTP ${resp.code}: $txt")
-            txt
-        }
-        val root = sharedJson.parseToJsonElement(respBody).jsonObject
-        val rawContent = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
-            ?.get("message")?.jsonObject
-            ?.get("content")?.jsonPrimitive?.contentOrNull
-            ?: throw IllegalStateException("$displayName returned empty response.")
-        sharedJson.decodeFromString(serializer, stripMarkdownFences(rawContent))
+        val bodyBytes = payload.toString()
+        val rawText = executeStreamingLlmCall(
+            requestBuilder = {
+                Request.Builder()
+                    .url(url)
+                    .header("Authorization", "Bearer ${key.ifBlank { "ollama-local" }}")
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .post(bodyBytes.toRequestBody("application/json".toMediaType()))
+                    .build()
+            },
+            providerLabel = displayName,
+            parseSseDataLine = { dataJson ->
+                val obj = sharedJson.parseToJsonElement(dataJson).jsonObject
+                val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+                val deltaContent = choice?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
+                deltaContent ?: choice?.get("message")?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
+            },
+            parseNonStreamBody = { fullBody ->
+                val root = sharedJson.parseToJsonElement(fullBody).jsonObject
+                root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+                    ?.get("message")?.jsonObject
+                    ?.get("content")?.jsonPrimitive?.contentOrNull
+            }
+        )
+        sharedJson.decodeFromString(serializer, extractCleanJsonBlock(rawText))
     }
 }
 
@@ -212,6 +381,7 @@ class AnthropicProvider(
             put("model", config.anthropicModel)
             put("max_tokens", 4096)
             put("temperature", temperature)
+            put("stream", true)
             put("system", augmentedSystem)
             put("messages", buildJsonArray {
                 add(buildJsonObject {
@@ -221,25 +391,37 @@ class AnthropicProvider(
             })
         }
 
-        val req = Request.Builder()
-            .url("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .post(payload.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
-        val respBody = sharedHttpClient.newCall(req).execute().use { resp ->
-            val txt = resp.body?.string() ?: "{}"
-            if (!resp.isSuccessful) throw IllegalStateException("Anthropic HTTP ${resp.code}: $txt")
-            txt
-        }
-        val root = sharedJson.parseToJsonElement(respBody).jsonObject
-        val contentArr = root["content"] as? JsonArray ?: JsonArray(emptyList())
-        val text = contentArr.firstNotNullOfOrNull { el ->
-            (el as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull
-        } ?: throw IllegalStateException("Anthropic returned empty response.")
-        sharedJson.decodeFromString(serializer, stripMarkdownFences(text))
+        val bodyBytes = payload.toString()
+        val rawText = executeStreamingLlmCall(
+            requestBuilder = {
+                Request.Builder()
+                    .url("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .post(bodyBytes.toRequestBody("application/json".toMediaType()))
+                    .build()
+            },
+            providerLabel = "Anthropic",
+            parseSseDataLine = { dataJson ->
+                val obj = sharedJson.parseToJsonElement(dataJson).jsonObject
+                val type = obj["type"]?.jsonPrimitive?.contentOrNull
+                when (type) {
+                    "content_block_delta" -> obj["delta"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                    "content_block_start" -> obj["content_block"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull
+                    else -> null
+                }
+            },
+            parseNonStreamBody = { fullBody ->
+                val root = sharedJson.parseToJsonElement(fullBody).jsonObject
+                val contentArr = root["content"] as? JsonArray ?: JsonArray(emptyList())
+                contentArr.firstNotNullOfOrNull { el ->
+                    (el as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull
+                }
+            }
+        )
+        sharedJson.decodeFromString(serializer, extractCleanJsonBlock(rawText))
     }
 }
 

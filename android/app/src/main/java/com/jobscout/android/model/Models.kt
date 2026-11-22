@@ -10,11 +10,32 @@ enum class JobStatus(val value: String) {
     @SerialName("skipped") SKIPPED("skipped"),
     @SerialName("blocked") BLOCKED("blocked"),
     @SerialName("tailored") TAILORED("tailored"),
-    @SerialName("applied") APPLIED("applied");
+    @SerialName("applied") APPLIED("applied"),
+    @SerialName("interview") INTERVIEW("interview"),
+    @SerialName("no_reply") NO_REPLY("no_reply"),
+    @SerialName("rejected") REJECTED("rejected");
+
+    val isProtectedPipeline: Boolean
+        get() = this in setOf(SHORTLISTED, TAILORED, APPLIED, INTERVIEW, NO_REPLY, REJECTED)
+
+    val isAppliedOutcome: Boolean
+        get() = this in setOf(APPLIED, INTERVIEW, NO_REPLY, REJECTED)
+
+    fun displayLabel(): String = when (this) {
+        DISCOVERED -> "NEW"
+        SHORTLISTED -> "SHORTLISTED"
+        SKIPPED -> "SKIPPED"
+        BLOCKED -> "BLOCKED"
+        TAILORED -> "TAILORED"
+        APPLIED -> "APPLIED"
+        INTERVIEW -> "INTERVIEW"
+        NO_REPLY -> "NO REPLY"
+        REJECTED -> "NOT SELECTED"
+    }
 
     companion object {
         fun fromValue(v: String?): JobStatus =
-            entries.firstOrNull { it.value == v } ?: DISCOVERED
+            entries.firstOrNull { it.value.equals(v?.trim(), ignoreCase = true) } ?: DISCOVERED
     }
 }
 
@@ -256,6 +277,9 @@ data class JobRecord(
     val scoreBreakdown: ScoreBreakdown?,
     val blockedReason: String?,
     val status: JobStatus,
+    val statusUpdatedAt: String = "",
+    val appliedAt: String? = null,
+    val syncedFromDesktop: Boolean = false,
     val userNotes: String,
     val firstSeenAt: String,
     val lastSeenAt: String,
@@ -265,6 +289,62 @@ data class JobRecord(
     val tailoredModelUsed: String? = null,
     val cvPdfPath: String? = null,
     val coverLetterPdfPath: String? = null
+)
+
+data class DesktopStatusUpdate(
+    val source: String,
+    val externalId: String,
+    val status: JobStatus,
+    val statusUpdatedAt: String = "",
+    val appliedAt: String? = null,
+    val isExpired: Boolean = false,
+    val expiresAt: String? = null,
+    val blockedReason: String? = null
+)
+
+data class DesktopPipelineJobDto(
+    val source: String,
+    val externalId: String,
+    val url: String = "",
+    val title: String = "",
+    val company: String = "",
+    val advertiserId: String? = null,
+    val isAgency: Boolean = false,
+    val location: String = "",
+    val workType: String = "",
+    val workArrangement: String = "",
+    val classifications: List<String> = emptyList(),
+    val teaser: String = "",
+    val bulletPoints: List<String> = emptyList(),
+    val descriptionHtml: String = "",
+    val descriptionText: String = "",
+    val salaryLabel: String = "",
+    val salaryEstMin: Int? = null,
+    val salaryEstMax: Int? = null,
+    val postedAt: String? = null,
+    val expiresAt: String? = null,
+    val isLinkOut: Boolean = false,
+    val isExpired: Boolean = false,
+    val screeningQuestions: List<String> = emptyList(),
+    val matchedQueries: List<String> = emptyList(),
+    val score: Int = 0,
+    val scoreBreakdown: ScoreBreakdown? = null,
+    val blockedReason: String? = null,
+    val status: JobStatus = JobStatus.SHORTLISTED,
+    val statusUpdatedAt: String = "",
+    val appliedAt: String? = null,
+    val userNotes: String = "",
+    val llmFit: LLMFitAnalysis? = null,
+    val tailoredPackage: TailoredApplicationPayload? = null,
+    val tailoredModelUsed: String = "",
+    val syncedFromPhone: Boolean = false
+)
+
+data class SyncMergeSummary(
+    val insertedFromDesktop: Int,
+    val statusUpdatedOnPhone: Int,
+    val expiredFlaggedOnPhone: Int,
+    val expiredRemovedOnPhone: Int
 )
 
 data class ScanProgress(
@@ -279,3 +359,23 @@ data class ScanProgress(
     val salariesDone: Int = 0,
     val errors: List<String> = emptyList()
 )
+
+@Serializable
+data class ExtractedJDMetadata(
+    val title: String = "",
+    val company: String = "",
+    val location: String = "",
+    @SerialName("work_type") val workType: String = "",
+    @SerialName("work_arrangement") val workArrangement: String = "",
+    @SerialName("salary_label") val salaryLabel: String = "",
+    @SerialName("salary_est_min") val salaryEstMin: Int? = null,
+    @SerialName("salary_est_max") val salaryEstMax: Int? = null,
+    @SerialName("bullet_points") val bulletPoints: List<String> = emptyList(),
+    @SerialName("screening_questions") val screeningQuestions: List<String> = emptyList()
+)
+
+data class ManualPastePrefill(
+    val url: String = "",
+    val jdText: String = ""
+)
+

@@ -7,7 +7,7 @@ __pycache__/
 
 # Personal runtime data, SQLite DBs, browser cookies, generated CVs/PDFs
 desktop/data/
-data/
+/data/
 *.db
 *.db-shm
 *.db-wal
