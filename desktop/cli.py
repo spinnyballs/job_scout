@@ -66,15 +66,17 @@ def main() -> None:
         host = getattr(args, "host", "0.0.0.0")
         port = getattr(args, "port", 8765)
         check_host = "127.0.0.1" if host == "0.0.0.0" else host
+        url = f"http://{check_host}:{port}"
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.5)
             if sock.connect_ex((check_host, port)) == 0:
                 print(
-                    f"\n[!] Port {port} is already in use (another Job Scout instance is already running).\n"
-                    f"    Close the older 'Job Scout Dashboard' terminal window first, then run start_dashboard.bat again.\n"
+                    f"\n[i] Job Scout is already running on {url}.\n"
+                    f"    Opening dashboard in your browser..."
                 )
+                if getattr(args, "open", False):
+                    webbrowser.open(url)
                 return
-        url = f"http://{check_host}:{port}"
         if getattr(args, "open", False):
             if getattr(args, "system_browser", False):
                 Timer(1.0, lambda: webbrowser.open(url)).start()

@@ -9,7 +9,18 @@ A self-hosted desktop dashboard (**FastAPI + Playwright**) and companion **Andro
 - [`desktop/`](desktop/) — Python FastAPI web dashboard, SEEK scanner, Paste JD importer (LinkedIn/Indeed/company sites), hidden salary binary-search prober, parallel AI CV/Cover Letter tailoring queue, Playwright SEEK Quick Apply copilot, and bidirectional Phone Wi-Fi Sync server with live SEEK expiry checks.
 - [`android/`](android/) — Native Kotlin + Jetpack Compose Android companion app with SEEK link/share-sheet & Paste JD import, unified pipeline categories & swipe triage, resilient SSE-streaming LLM tailoring, on-device A4 PDF rendering (including zero-API-cost rebuild from saved text), Q&A memory, and bidirectional LAN Wi-Fi Sync with Desktop.
 
-## Quick Start (Desktop)
+## Quick Start (Desktop — One-Click Auto Setup)
+
+Requires **Python 3.10+**. Everything else (`.venv`, Python packages, Playwright Chromium, and starter config templates) is installed and initialized automatically on first launch:
+
+- **Windows**: Double-click [`Start Job Scout.bat`](Start%20Job%20Scout.bat) (or [`desktop/start_dashboard.bat`](desktop/start_dashboard.bat)).
+- **macOS**: Double-click [`start_job_scout.command`](start_job_scout.command) (or run `./desktop/start_dashboard.sh` in Terminal).
+- **Linux**: Run `./desktop/start_dashboard.sh` (or `python3 desktop/launch.py`).
+
+Subsequent launches skip setup automatically and open the dashboard at `http://127.0.0.1:8765` right away. Once open, configure your **Master Profile**, **Queries & Guardrails**, **Q&A Memory**, and **AI Providers** (Gemini / OpenAI-compatible / DeepSeek / Anthropic — API keys are stored locally in `desktop/config/secrets.json`).
+
+<details>
+<summary>Manual CLI setup (optional)</summary>
 
 ```bash
 cd desktop
@@ -18,22 +29,10 @@ python -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
-```
-
-Copy the starter config templates if you want to customize JSON directly (or simply launch the app and edit everything in the UI):
-
-```bash
-cp config/candidate_profile.example.json config/candidate_profile.json
-cp config/scanner_config.example.json config/scanner_config.json
-```
-
-Start the dashboard:
-
-```bash
 python cli.py serve --open
 ```
 
-Then open `http://127.0.0.1:8765`, configure your **Master Profile**, **Queries & Guardrails**, **Q&A Memory**, and **AI Providers** (Gemini / OpenAI-compatible / DeepSeek / Anthropic — API keys are stored locally in `desktop/config/secrets.json`).
+</details>
 
 ## Quick Start (Android)
 
